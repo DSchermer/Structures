@@ -3,8 +3,9 @@
   // - `main` points at the Worker entry that handles /api/* and falls
   //   through to the ASSETS binding for everything else.
   // - `assets.directory` is the Vite build output served as static files.
-  // - The DB binding is wired separately in the Cloudflare dashboard
-  //   (Settings → Bindings → Add → D1) so we don't hardcode database_id.
+  // - The DB binding is declared here (not just in the dashboard) because
+  //   Workers Builds treats wrangler.jsonc as the source of truth for
+  //   bindings — dashboard-added bindings get wiped on the next deploy.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "structures",
   "compatibility_date": "2026-05-25",
@@ -12,5 +13,12 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "structures",
+      "database_id": "98f83161-b262-4313-8b21-6abc11b1e06d"
+    }
+  ]
 }
