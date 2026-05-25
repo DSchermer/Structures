@@ -1,0 +1,11 @@
+node_modules/
+dist/
+app/dist/
+.DS_Store
+.wrangler/
+*.log
+
+# tsc -b artifacts
+*.tsbuildinfo
+app/vite.config.js
+app/vite.config.d.ts
