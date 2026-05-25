@@ -6,7 +6,7 @@
   // - The DB binding is wired separately in the Cloudflare dashboard
   //   (Settings → Bindings → Add → D1) so we don't hardcode database_id.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "structures",
+  "name": "a",
   "compatibility_date": "2026-05-25",
   "main": "src/worker/index.ts",
   "assets": {
