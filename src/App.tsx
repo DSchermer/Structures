@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import SearchPage from './pages/SearchPage';
 import StructureDetailPage from './pages/StructureDetail';
 import DraftEditor from './pages/DraftEditor';
+import InboxPage from './pages/Inbox';
+import AssignmentView from './pages/AssignmentView';
 import type { Row, SearchResp, TagsResp, User, UsersResp } from './types';
 
 // ---------------- current user (localStorage) ----------------
@@ -51,10 +53,15 @@ export default function App() {
   let body: React.ReactNode;
   const structMatch = path.match(/^\/structures\/([0-9a-f-]+)$/);
   const draftMatch  = path.match(/^\/drafts\/([0-9a-f-]+)$/);
+  const assignMatch = path.match(/^\/assignments\/([0-9a-f-]+)$/);
   if (draftMatch) {
     body = <DraftEditor id={draftMatch[1]} currentUser={currentUser} tags={tags} />;
   } else if (structMatch) {
     body = <StructureDetailPage id={structMatch[1]} currentUser={currentUser} />;
+  } else if (assignMatch) {
+    body = <AssignmentView id={assignMatch[1]} currentUser={currentUser} />;
+  } else if (path === '/inbox') {
+    body = <InboxPage currentUser={currentUser} />;
   } else if (path === '/') {
     body = <SearchPage rows={rows} tags={tags} />;
   } else {
@@ -81,9 +88,15 @@ export default function App() {
 function Header({ users, currentUser, onPick }: { users: User[]; currentUser: User | null; onPick: (u: User) => void }) {
   return (
     <header className="border-b border-ink-200 bg-white">
-      <div className="mx-auto max-w-7xl px-6 py-3 flex items-center gap-3">
+      <div className="mx-auto max-w-7xl px-6 py-3 flex items-center gap-4">
         <a href="/" className="text-sm font-mono text-ink-500 hover:text-indigo-700">structurev2</a>
         <span className="text-xs uppercase tracking-wider text-ink-400">prototype</span>
+        <a
+          href="/inbox"
+          className={'text-xs px-2 py-1 rounded hover:bg-ink-100 ' + (currentUser?.role === 'order_management' ? 'text-indigo-700 font-medium' : 'text-ink-500')}
+        >
+          Inbox
+        </a>
         <span className="ml-auto">
           <UserSwitcher users={users} current={currentUser} onPick={onPick} />
         </span>
