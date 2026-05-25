@@ -3,10 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "description": "StructureV2 — D1 prototype (Cloudflare Pages + Pages Functions + D1)",
+  "workspaces": [
+    "app"
+  ],
   "scripts": {
-    "install:all": "npm install && npm install --prefix app",
-    "dev": "npm run dev --prefix app",
-    "build": "npm run build --prefix app && node scripts/bundle.mjs",
+    "dev": "npm run dev --workspace app",
+    "build": "npm run build --workspace app && node scripts/bundle.mjs",
     "preview": "wrangler pages dev dist --d1=DB"
   }
 }
