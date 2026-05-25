@@ -5,6 +5,9 @@ app/dist/
 .wrangler/
 *.log
 
+# Local-only docs (not pushed)
+DEPLOY.md
+
 # tsc -b artifacts
 *.tsbuildinfo
 app/vite.config.js
