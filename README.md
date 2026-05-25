@@ -28,7 +28,7 @@ Prototype/
 
 ```
 cd Prototype/Demo
-npm run install:all   # once, after fresh clone
+npm install           # once, after fresh clone (npm workspaces install both root + app/)
 npm run build         # writes Prototype/Demo/dist/
 ```
 
