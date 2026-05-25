@@ -145,16 +145,9 @@ function SearchPage({ rows, tags }: { rows: Row[] | 'loading' | 'error'; tags: T
       for (const t of selectedSpecTags)    if (!r.spec_tags.includes(t)) return false;
       for (const t of selectedGeneralTags) if (!r.general_tags.includes(t)) return false;
       for (const t of selectedVariantTags) if (!r.variant_tags.includes(t)) return false;
-      // text search — match against any visible field or tag name
-      if (qLower) {
-        const haystack = [
-          r.spec_number, r.part_number, r.top_level_part_number,
-          r.parent_part_number ?? '',
-          ...r.spec_tags, ...r.general_tags, ...r.variant_tags,
-          r.checkout_holder_name ?? '',
-        ].join(' ').toLowerCase();
-        if (!haystack.includes(qLower)) return false;
-      }
+      // text search — prefix-match each candidate identifier or tag.
+      // "I always want to see what I'm searching for at the front of the part."
+      if (qLower && !matchesPrefix(r, qLower)) return false;
       return true;
     });
   }, [rows, q, selectedSpecTags, selectedGeneralTags, selectedVariantTags, archived, subassembly]);
@@ -215,6 +208,22 @@ function SearchPage({ rows, tags }: { rows: Row[] | 'loading' | 'error'; tags: T
       </div>
     </div>
   );
+}
+
+function matchesPrefix(r: Row, qLower: string): boolean {
+  if (r.spec_number.toLowerCase().startsWith(qLower)) return true;
+  if (r.part_number.toLowerCase().startsWith(qLower)) return true;
+  if (r.top_level_part_number.toLowerCase().startsWith(qLower)) return true;
+  if (r.parent_part_number && r.parent_part_number.toLowerCase().startsWith(qLower)) return true;
+  for (const t of r.spec_tags)    if (t.toLowerCase().startsWith(qLower)) return true;
+  for (const t of r.general_tags) if (t.toLowerCase().startsWith(qLower)) return true;
+  for (const t of r.variant_tags) if (t.toLowerCase().startsWith(qLower)) return true;
+  if (r.checkout_holder_name) {
+    for (const w of r.checkout_holder_name.toLowerCase().split(/\s+/)) {
+      if (w.startsWith(qLower)) return true;
+    }
+  }
+  return false;
 }
 
 function toggle(name: string, current: Set<string>, set: (s: Set<string>) => void) {
