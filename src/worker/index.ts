@@ -33,7 +33,9 @@ export default {
 
 async function handleApi(url: URL, env: Env): Promise<Response> {
   if (url.pathname === '/api/health') return handleHealth(env);
-  if (url.pathname === '/api/specs')  return handleSpecs(env);
+  if (url.pathname === '/api/search') return handleSearch(env);
+  if (url.pathname === '/api/tags')   return handleTags(env);
+  if (url.pathname === '/api/users')  return handleUsers(env);
   return json({ error: 'Not found', path: url.pathname }, 404);
 }
 
@@ -58,21 +60,21 @@ async function handleHealth(env: Env): Promise<Response> {
   }
 }
 
-interface SpecRow {
-  id: string;
-  spec_number: string;
-  customer_revision: string;
-  spec_revision_count: number;
-}
-interface StructureRow {
+interface SearchRow {
   id: string;
   spec_id: string;
+  spec_number: string;
   part_number: string;
+  top_level_part_number: string;
   parent_structure_id: string | null;
-  cr: number;
-  pr: number;
+  parent_part_number: string | null;
+  current_construction_revision_number: number;
+  current_price_revision_number: number;
   line_item_count: number;
   sell_price: number | null;
+  subassembly_cost: number | null;
+  checkout_holder_name: string | null;
+  checkout_acquired_at: string | null;
 }
 interface TagRow {
   scope_id: string;
@@ -80,68 +82,112 @@ interface TagRow {
   kind: string;
 }
 
-async function handleSpecs(env: Env): Promise<Response> {
+async function handleSearch(env: Env): Promise<Response> {
   try {
-    const specsQ = await env.DB.prepare(`
-      SELECT s.id, s.spec_number, s.customer_revision,
-             (SELECT COUNT(*) FROM SPEC_REVISION WHERE spec_id = s.id) AS spec_revision_count
-      FROM SPEC s
-      ORDER BY s.spec_number
-    `).all<SpecRow>();
+    // Pull every structure with its spec context + counts + sell/cost + lock state.
+    // For the demo's catalog size (~30 rows), returning all results to the
+    // client and filtering there is fine; live-narrowing search stays snappy.
+    const structuresQ = await env.DB.prepare(`
+      SELECT
+        s.id, s.spec_id, sp.spec_number, s.part_number,
+        (sp.spec_number || s.part_number) AS top_level_part_number,
+        s.parent_structure_id,
+        ps.part_number AS parent_part_number,
+        s.current_construction_revision_number,
+        s.current_price_revision_number,
+        (SELECT COUNT(*) FROM LINE_ITEM WHERE structure_id = s.id) AS line_item_count,
+        (SELECT pp.price FROM PRICE_POINT pp
+         WHERE pp.structure_id = s.id AND pp.scope = 'structure_sell'
+         ORDER BY pp.set_at DESC LIMIT 1) AS sell_price,
+        (SELECT pp.price FROM PRICE_POINT pp
+         WHERE pp.structure_id = s.id AND pp.scope = 'subassembly_cost'
+         ORDER BY pp.set_at DESC LIMIT 1) AS subassembly_cost,
+        u.display_name AS checkout_holder_name,
+        cl.acquired_at AS checkout_acquired_at
+      FROM STRUCTURE s
+      JOIN SPEC sp ON sp.id = s.spec_id
+      LEFT JOIN STRUCTURE ps ON ps.id = s.parent_structure_id
+      LEFT JOIN CHECKOUT_LOCK cl ON cl.structure_id = s.id
+      LEFT JOIN USER u ON u.id = cl.holder_user_id
+      ORDER BY sp.spec_number, (s.parent_structure_id IS NOT NULL), s.part_number
+    `).all<SearchRow>();
 
     const specTagsQ = await env.DB.prepare(`
       SELECT st.spec_id AS scope_id, t.name, t.kind
       FROM SPEC_TAG st JOIN TAG t ON t.id = st.tag_id
-      ORDER BY t.name
     `).all<TagRow>();
-
-    const structuresQ = await env.DB.prepare(`
-      SELECT s.id, s.spec_id, s.part_number, s.parent_structure_id,
-             s.current_construction_revision_number AS cr,
-             s.current_price_revision_number AS pr,
-             (SELECT COUNT(*) FROM LINE_ITEM WHERE structure_id = s.id) AS line_item_count,
-             (SELECT pp.price FROM PRICE_POINT pp
-              WHERE pp.structure_id = s.id AND pp.scope = 'structure_sell'
-              ORDER BY pp.set_at DESC LIMIT 1) AS sell_price
-      FROM STRUCTURE s
-      ORDER BY s.spec_id, (s.parent_structure_id IS NOT NULL), s.part_number
-    `).all<StructureRow>();
 
     const structureTagsQ = await env.DB.prepare(`
-      SELECT st.structure_id AS scope_id, t.name, t.kind
+      SELECT st.structure_id AS scope_id, t.name, t.kind, t.name_lower
       FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
-      WHERE t.kind IN ('general', 'variant', 'system')
-      ORDER BY t.kind, t.name
-    `).all<TagRow>();
+    `).all<TagRow & { name_lower: string }>();
 
     const specTagsByScope = group(specTagsQ.results ?? [], (r) => r.scope_id);
-    const structuresBySpec = group(structuresQ.results ?? [], (r) => r.spec_id);
     const structureTagsByScope = group(structureTagsQ.results ?? [], (r) => r.scope_id);
 
-    const specs = (specsQ.results ?? []).map((s) => ({
-      id: s.id,
-      spec_number: s.spec_number,
-      customer_revision: s.customer_revision,
-      spec_revision_count: s.spec_revision_count,
-      spec_tags: (specTagsByScope.get(s.id) ?? []).map((t) => t.name),
-      parts: (structuresBySpec.get(s.id) ?? []).map((p) => {
-        const tags = structureTagsByScope.get(p.id) ?? [];
-        return {
-          id: p.id,
-          part_number: p.part_number,
-          is_variant: p.parent_structure_id !== null,
-          current_construction_revision_number: p.cr,
-          current_price_revision_number: p.pr,
-          line_item_count: p.line_item_count,
-          sell_price: p.sell_price,
-          general_tags: tags.filter((t) => t.kind === 'general').map((t) => t.name),
-          variant_tags: tags.filter((t) => t.kind === 'variant').map((t) => t.name),
-          system_tags:  tags.filter((t) => t.kind === 'system').map((t) => t.name),
-        };
-      }),
-    }));
+    const rows = (structuresQ.results ?? []).map((s) => {
+      const tags = structureTagsByScope.get(s.id) ?? [];
+      const specTags = specTagsByScope.get(s.spec_id) ?? [];
+      const sysTagNames = tags.filter((t) => t.kind === 'system').map((t) => t.name_lower);
+      return {
+        id: s.id,
+        spec_id: s.spec_id,
+        spec_number: s.spec_number,
+        part_number: s.part_number,
+        top_level_part_number: s.top_level_part_number,
+        is_variant: s.parent_structure_id !== null,
+        parent_part_number: s.parent_part_number,
+        is_subassembly: sysTagNames.includes('subassembly'),
+        current_construction_revision_number: s.current_construction_revision_number,
+        current_price_revision_number: s.current_price_revision_number,
+        line_item_count: s.line_item_count,
+        sell_price: s.sell_price,
+        subassembly_cost: s.subassembly_cost,
+        spec_tags: specTags.map((t) => t.name),
+        general_tags: tags.filter((t) => t.kind === 'general').map((t) => t.name),
+        variant_tags: tags.filter((t) => t.kind === 'variant').map((t) => t.name),
+        is_archived:     sysTagNames.includes('archived'),
+        is_locked:       sysTagNames.includes('locked'),
+        is_below_target: sysTagNames.includes('below-target'),
+        checkout_holder_name: s.checkout_holder_name,
+        checkout_acquired_at: s.checkout_acquired_at,
+      };
+    });
 
-    return json({ specs });
+    return json({ rows });
+  } catch (err) {
+    return json({ error: msg(err) }, 500);
+  }
+}
+
+async function handleTags(env: Env): Promise<Response> {
+  try {
+    const q = await env.DB.prepare(`
+      SELECT name, kind FROM TAG
+      WHERE kind IN ('spec', 'general', 'variant')
+      ORDER BY kind, name
+    `).all<{ name: string; kind: string }>();
+
+    const byKind = group(q.results ?? [], (t) => t.kind);
+    return json({
+      spec:    (byKind.get('spec')    ?? []).map((t) => t.name),
+      general: (byKind.get('general') ?? []).map((t) => t.name),
+      variant: (byKind.get('variant') ?? []).map((t) => t.name),
+    });
+  } catch (err) {
+    return json({ error: msg(err) }, 500);
+  }
+}
+
+async function handleUsers(env: Env): Promise<Response> {
+  try {
+    const q = await env.DB.prepare(`
+      SELECT id, username, display_name, initials, role, is_admin
+      FROM USER
+      WHERE username <> '__system__' AND is_active = 1
+      ORDER BY role DESC, display_name
+    `).all<{ id: string; username: string; display_name: string; initials: string; role: string; is_admin: number }>();
+    return json({ users: q.results ?? [] });
   } catch (err) {
     return json({ error: msg(err) }, 500);
   }
