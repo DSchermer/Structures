@@ -3,16 +3,19 @@
   // - `main` points at the Worker entry that handles /api/* and falls
   //   through to the ASSETS binding for everything else.
   // - `assets.directory` is the Vite build output served as static files.
-  // - The DB binding is declared here (not just in the dashboard) because
-  //   Workers Builds treats wrangler.jsonc as the source of truth for
-  //   bindings — dashboard-added bindings get wiped on the next deploy.
+  // - `assets.not_found_handling: 'single-page-application'` serves
+  //   index.html for any unknown path so React Router-style direct URLs
+  //   (e.g. /structures/abc) load the SPA and route client-side.
+  // - The D1 binding is declared here so Workers Builds preserves it
+  //   on every deploy (dashboard-set bindings get wiped otherwise).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "structures",
   "compatibility_date": "2026-05-25",
   "main": "src/worker/index.ts",
   "assets": {
     "directory": "./dist",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
   },
   "d1_databases": [
     {
