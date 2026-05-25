@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
-import type { StructureDetail, LineItemDetail, PricePointDetail, RevisionDetail } from '../types';
+import type { StructureDetail, LineItemDetail, PricePointDetail, RevisionDetail, User } from '../types';
 import { Chip, StatusBadge, usd, relativeTime, formatDate, pct } from '../components/shared';
+import { Dialog } from '../components/Dialog';
 
-export default function StructureDetailPage({ id }: { id: string }) {
+export default function StructureDetailPage({ id, currentUser }: { id: string; currentUser: User | null }) {
   const [data, setData] = useState<StructureDetail | 'loading' | 'error' | 'notfound'>('loading');
+  const [showNewVariant, setShowNewVariant] = useState(false);
+  const [checkingOut, setCheckingOut] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -22,9 +25,30 @@ export default function StructureDetailPage({ id }: { id: string }) {
   if (data === 'notfound') return <Frame><NotFound id={id} /></Frame>;
   if (data === 'error')    return <Frame><p className="text-rose-700">Couldn't reach <code>/api/structures/{id}</code>.</p></Frame>;
 
+  async function checkOut() {
+    if (!currentUser) { alert('Pick a user from the top-bar dropdown first.'); return; }
+    setCheckingOut(true);
+    try {
+      const r = await fetch(`/api/structures/${id}/checkout`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ current_user_id: currentUser.id }),
+      });
+      const j = await r.json() as any;
+      if (!r.ok) { alert(j.error ?? 'Checkout failed'); return; }
+      window.location.href = `/drafts/${id}`;
+    } finally { setCheckingOut(false); }
+  }
+
   return (
     <Frame>
-      <DetailHeader d={data} />
+      <DetailHeader
+        d={data}
+        currentUser={currentUser}
+        checkingOut={checkingOut}
+        onCheckOut={checkOut}
+        onNewVariant={() => setShowNewVariant(true)}
+      />
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
         <div className="space-y-6 min-w-0">
           <BomSection lines={data.line_items} />
@@ -37,7 +61,67 @@ export default function StructureDetailPage({ id }: { id: string }) {
           <MetaSidebar d={data} />
         </aside>
       </div>
+      {showNewVariant && currentUser && (
+        <NewVariantDialog base={data} currentUser={currentUser} onClose={() => setShowNewVariant(false)} />
+      )}
     </Frame>
+  );
+}
+
+function NewVariantDialog({ base, currentUser, onClose }: { base: StructureDetail; currentUser: User; onClose: () => void }) {
+  const [partNumber, setPartNumber] = useState(base.part_number + '-');
+  const [creating, setCreating] = useState(false);
+
+  async function create() {
+    setCreating(true);
+    try {
+      const r = await fetch('/api/structures', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          spec_id: base.spec_id,
+          parent_structure_id: base.id,
+          part_number: partNumber.trim(),
+          base_from_structure_id: base.id,
+          current_user_id: currentUser.id,
+        }),
+      });
+      const j = await r.json() as any;
+      if (!r.ok) { alert(j.error ?? 'Create failed'); return; }
+      window.location.href = `/drafts/${j.id}`;
+    } finally { setCreating(false); }
+  }
+
+  return (
+    <Dialog
+      open onClose={onClose}
+      title={`New variant of ${base.top_level_part_number}`}
+      footer={
+        <>
+          <button onClick={onClose} disabled={creating} className="rounded-md border border-ink-300 px-3 py-1.5 text-sm hover:bg-ink-50">Cancel</button>
+          <button onClick={create} disabled={creating || !partNumber.trim()} className="rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">{creating ? 'Creating…' : 'Create variant'}</button>
+        </>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        <p className="text-ink-700">
+          The new variant starts as a copy of {base.spec_number}{base.part_number}'s BOM, instructions, and general tags. You'll land in the draft editor to make your changes and add the variant tag.
+        </p>
+        <label className="block">
+          <div className="text-xs uppercase tracking-wide text-ink-500 mb-1">New part number</div>
+          <input
+            autoFocus
+            className="w-full font-mono text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            value={partNumber}
+            onChange={(e) => setPartNumber(e.target.value)}
+            maxLength={25}
+          />
+          <div className="text-xs text-ink-500 mt-1">
+            Live preview: <span className="font-mono text-ink-700">{base.spec_number}{partNumber.trim() || '—'}</span>
+          </div>
+        </label>
+      </div>
+    </Dialog>
   );
 }
 
@@ -56,7 +140,13 @@ function NotFound({ id }: { id: string }) {
 
 // ---------------- header ----------------
 
-function DetailHeader({ d }: { d: StructureDetail }) {
+function DetailHeader({ d, currentUser, checkingOut, onCheckOut, onNewVariant }: {
+  d: StructureDetail;
+  currentUser: User | null;
+  checkingOut: boolean;
+  onCheckOut: () => void;
+  onNewVariant: () => void;
+}) {
   return (
     <div className="rounded-lg bg-white border border-ink-200 shadow-sm p-5">
       <div className="flex items-start gap-4 flex-wrap">
@@ -109,15 +199,30 @@ function DetailHeader({ d }: { d: StructureDetail }) {
         <Stat label="Created"     value={<span className="text-ink-700">{d.created_by_name ?? '—'} · {formatDate(d.created_at)}</span>} />
       </div>
 
-      <div className="mt-5 flex items-center gap-2">
-        <button
-          disabled
-          className="rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm font-medium opacity-40 cursor-not-allowed"
-          title="Activated in Phase 4"
-        >
-          Check out
-        </button>
-        <span className="text-xs text-ink-400">Editing lands in Phase 4.</span>
+      <div className="mt-5 flex items-center gap-2 flex-wrap">
+        {d.lock ? (
+          d.lock.holder_user_id === currentUser?.id ? (
+            <a href={`/drafts/${d.id}`} className="rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm font-medium hover:bg-indigo-700">Resume draft →</a>
+          ) : (
+            <span className="text-xs text-ink-500 italic">Checked out by {d.lock.holder_name}. Reach out to coordinate.</span>
+          )
+        ) : d.is_archived ? (
+          <span className="text-xs text-ink-500 italic">Unarchive first to edit.</span>
+        ) : d.is_locked ? (
+          <span className="text-xs text-ink-500 italic">Unlock first to edit.</span>
+        ) : (
+          <button
+            onClick={onCheckOut}
+            disabled={checkingOut || !currentUser}
+            className="rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+          >{checkingOut ? 'Checking out…' : 'Check out'}</button>
+        )}
+        {!d.is_variant && !d.is_subassembly && currentUser && (
+          <button
+            onClick={onNewVariant}
+            className="rounded-md border border-indigo-300 text-indigo-700 px-3 py-1.5 text-sm font-medium hover:bg-indigo-50"
+          >+ New variant of this base</button>
+        )}
       </div>
     </div>
   );

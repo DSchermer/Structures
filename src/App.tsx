@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import SearchPage from './pages/SearchPage';
 import StructureDetailPage from './pages/StructureDetail';
+import DraftEditor from './pages/DraftEditor';
 import type { Row, SearchResp, TagsResp, User, UsersResp } from './types';
 
 // ---------------- current user (localStorage) ----------------
@@ -49,8 +50,11 @@ export default function App() {
   // Route dispatch
   let body: React.ReactNode;
   const structMatch = path.match(/^\/structures\/([0-9a-f-]+)$/);
-  if (structMatch) {
-    body = <StructureDetailPage id={structMatch[1]} />;
+  const draftMatch  = path.match(/^\/drafts\/([0-9a-f-]+)$/);
+  if (draftMatch) {
+    body = <DraftEditor id={draftMatch[1]} currentUser={currentUser} tags={tags} />;
+  } else if (structMatch) {
+    body = <StructureDetailPage id={structMatch[1]} currentUser={currentUser} />;
   } else if (path === '/') {
     body = <SearchPage rows={rows} tags={tags} />;
   } else {
