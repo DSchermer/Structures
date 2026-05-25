@@ -1,0 +1,14 @@
+{
+  // Tells Cloudflare's build pipeline this is a Pages deployment.
+  // The `pages_build_output_dir` field is what flips `wrangler deploy`
+  // into Pages mode (equivalent to `wrangler pages deploy ./dist`),
+  // and disambiguates the workspace root for monorepo detection.
+  //
+  // The D1 binding (DB → structures) is configured via the Pages
+  // dashboard, not here — that way we don't need the database_id
+  // hardcoded in source.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "structures",
+  "compatibility_date": "2026-05-25",
+  "pages_build_output_dir": "./dist"
+}
