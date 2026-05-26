@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from '../types';
 import { Chip, StatusBadge, usd, formatDate, tagStyle } from '../components/shared';
 import { Dialog } from '../components/Dialog';
@@ -211,7 +211,7 @@ export default function PricesPage({ currentUser }: { currentUser: User | null }
                     <th className="px-3 py-2 text-left font-medium">Quote</th>
                     <th className="px-3 py-2 text-left font-medium">Set by</th>
                     <th className="px-3 py-2 text-left font-medium">Set at</th>
-                    <th className="px-3 py-2 text-right font-medium">Action</th>
+                    <th className="px-2 py-2 w-8"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -289,7 +289,6 @@ function PpRow({ p, onToggleSuperseded, canEdit }: { p: Pp; onToggleSuperseded: 
         else window.location.href = href!;
       }
     : undefined;
-  const onButtonClick = (e: React.MouseEvent) => { e.stopPropagation(); onToggleSuperseded(); };
   return (
     <tr
       className={
@@ -322,17 +321,16 @@ function PpRow({ p, onToggleSuperseded, canEdit }: { p: Pp; onToggleSuperseded: 
       <td className="px-3 py-2 text-ink-700 font-mono text-xs">{p.quote_number ?? '—'}</td>
       <td className="px-3 py-2 text-ink-700 text-xs">{p.set_by ?? '—'}</td>
       <td className="px-3 py-2 text-ink-500 text-xs font-mono">{formatDate(p.set_at)}</td>
-      <td className="px-3 py-2 text-right">
+      <td className="px-2 py-2 text-right">
         {canEdit && (
-          <button
-            onClick={onButtonClick}
-            className={'text-xs px-2 py-1 rounded border ' + (p.is_superseded
-              ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
-              : 'border-rose-300 text-rose-700 hover:bg-rose-50')}
-            title={p.is_superseded ? 'Removes the superseded marker' : 'Marks this price as no-longer-current; LINE_ITEMs already pointing at it are unaffected.'}
-          >
-            {p.is_superseded ? 'Un-supersede' : 'Mark superseded'}
-          </button>
+          <RowMenu>
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleSuperseded(); }}
+              className={'block w-full text-left px-3 py-2 text-xs hover:bg-ink-50 ' + (p.is_superseded ? 'text-emerald-700' : 'text-rose-700')}
+            >
+              {p.is_superseded ? 'Un-supersede' : 'Mark superseded'}
+            </button>
+          </RowMenu>
         )}
       </td>
     </tr>
@@ -530,6 +528,36 @@ function CreateCostPpDialog({ currentUser, existingComponents, existingCostTags,
         {err && <div className="rounded-md bg-rose-50 border border-rose-200 px-3 py-2 text-sm text-rose-800">{err}</div>}
       </div>
     </Dialog>
+  );
+}
+
+function RowMenu({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className="text-ink-400 hover:text-ink-700 px-2 py-1 rounded hover:bg-ink-100 text-base leading-none"
+        aria-label="Row actions"
+      >⋯</button>
+      {open && (
+        <div
+          className="absolute right-0 mt-1 bg-white border border-ink-200 rounded-md shadow-lg z-10 min-w-[160px] py-1"
+          onClick={() => setOpen(false)}
+        >
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
