@@ -57,7 +57,7 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
   }
 
   let mm: RegExpMatchArray | null;
-  if ((mm = m(/^\/api\/structures\/([0-9a-fA-F-]+)$/)))                       return handleStructure(env, mm[1]);
+  if ((mm = m(/^\/api\/structures\/([0-9a-fA-F-]+)$/)))                       return handleStructure(env, mm[1], url.searchParams.get('at_cr'));
   if ((mm = m(/^\/api\/structures\/([0-9a-fA-F-]+)\/checkout$/)) && request.method === 'POST') {
     return handleCheckout(env, mm[1], request);
   }
@@ -345,14 +345,61 @@ async function handleTogglePpSuperseded(env: Env, ppId: string, request: Request
 // /api/structures/:id (full detail; used by detail page + draft loader)
 // =============================================================
 
-async function handleStructure(env: Env, id: string): Promise<Response> {
+async function handleStructure(env: Env, id: string, atCrId: string | null): Promise<Response> {
   try {
     const data = await loadStructureDetail(env, id);
     if (!data) return json({ error: 'Not found' }, 404);
+    if (atCrId) {
+      const snap = await env.DB.prepare(`SELECT snapshot_json, taken_at FROM CONSTRUCTION_REVISION_SNAPSHOT WHERE construction_revision_id = ?`).bind(atCrId).first<{ snapshot_json: string; taken_at: string }>();
+      const cr   = data.construction_revisions.find((r: any) => r.id === atCrId);
+      if (snap && cr) {
+        return json(overlaySnapshot(data, atCrId, cr.revision_number, JSON.parse(snap.snapshot_json), snap.taken_at));
+      }
+      // Snapshot missing → return current with a flag so the UI can show the banner anyway
+      return json({ ...data, viewing_at: { cr_id: atCrId, revision_number: cr?.revision_number ?? null, snapshot_available: false } });
+    }
     return json(data);
   } catch (err) {
     return json({ error: msg(err) }, 500);
   }
+}
+
+function overlaySnapshot(data: any, crId: string, revisionNumber: number, snapshot: any, takenAt: string): any {
+  const sf = snapshot.structure_fields ?? {};
+  const liveById = new Map<string, any>((data.line_items ?? []).map((li: any): [string, any] => [li.id, li]));
+  const snapshotLines = (snapshot.line_items ?? []).map((s: any) => {
+    const live: any = liveById.get(s.id);
+    return {
+      id: s.id,
+      sort_order: s.sort_order,
+      component_part_number: s.component_part_number,
+      part_description: s.part_description,
+      quantity: s.quantity,
+      unit_price: s.unit_price,
+      chosen_price_scope: live?.chosen_price_scope ?? null,
+      quote_number: live?.quote_number ?? null,
+      price_override: s.price_override,
+      supplier: s.supplier,
+      lead_time_days: s.lead_time_days,
+      product_code: s.product_code,
+      is_commissioned: !!s.is_commissioned,
+      commission_cap_pct: s.commission_cap_pct,
+      sub_assembly: live?.sub_assembly ?? null,
+    };
+  });
+  return {
+    ...data,
+    part_number: sf.part_number ?? data.part_number,
+    top_level_part_number: (data.spec_number ?? '') + (sf.part_number ?? data.part_number),
+    build_hours: sf.build_hours ?? data.build_hours,
+    target_assembly_margin_pct: sf.target_assembly_margin_pct ?? data.target_assembly_margin_pct,
+    build_instructions: [sf.build_instr_1, sf.build_instr_2, sf.build_instr_3, sf.build_instr_4, sf.build_instr_5].filter((x: string | null) => x),
+    work_instructions:  [sf.work_instr_1,  sf.work_instr_2,  sf.work_instr_3,  sf.work_instr_4,  sf.work_instr_5].filter((x: string | null) => x),
+    line_items: snapshotLines,
+    general_tags: (snapshot.tags ?? []).filter((t: any) => t.kind === 'general').map((t: any) => ({ name: t.name, applied_by: null, applied_at: null })),
+    variant_tags: (snapshot.tags ?? []).filter((t: any) => t.kind === 'variant').map((t: any) => ({ name: t.name, applied_by: null, applied_at: null })),
+    viewing_at: { cr_id: crId, revision_number: revisionNumber, snapshot_available: true, snapshot_taken_at: takenAt },
+  };
 }
 
 async function loadStructureDetail(env: Env, id: string): Promise<any | null> {
@@ -1097,7 +1144,7 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
         .bind(structureId, t.tag_id, body.current_user_id, now));
     }
 
-    // CR insert (if applicable)
+    // CR insert (if applicable) + matching point-in-time snapshot
     let crId: string | null = null;
     if (crChanged) {
       crId = uuid();
@@ -1106,6 +1153,47 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
         INSERT INTO CONSTRUCTION_REVISION (id, structure_id, revision_number, author_user_id, committed_at, change_set, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).bind(crId, structureId, nextCr, body.current_user_id, now, JSON.stringify(cs), body.cr_notes ?? null));
+
+      // Snapshot: capture everything the viewer needs to render this revision
+      const snapshot = {
+        structure_fields: {
+          part_number:                draft.part_number,
+          build_hours:                draft.build_hours,
+          target_assembly_margin_pct: draft.target_assembly_margin_pct,
+          spec_revision_id:           draft.spec_revision_id,
+          build_instr_1:              draft.build_instr_1,
+          build_instr_2:              draft.build_instr_2,
+          build_instr_3:              draft.build_instr_3,
+          build_instr_4:              draft.build_instr_4,
+          build_instr_5:              draft.build_instr_5,
+          work_instr_1:               draft.work_instr_1,
+          work_instr_2:               draft.work_instr_2,
+          work_instr_3:               draft.work_instr_3,
+          work_instr_4:               draft.work_instr_4,
+          work_instr_5:               draft.work_instr_5,
+        },
+        line_items: (draftLines.results ?? []).map((li: any, i: number) => ({
+          id: li.id,
+          sort_order: li.sort_order,
+          component_part_number: li.component_part_number,
+          part_description: li.part_description,
+          quantity: li.quantity,
+          unit_price: linesForBack[i].unit_price,
+          chosen_price_point_id: li.chosen_price_point_id,
+          price_override: li.price_override,
+          supplier: li.supplier,
+          lead_time_days: li.lead_time_days,
+          product_code: li.product_code,
+          is_commissioned: !!li.is_commissioned,
+          commission_cap_pct: li.commission_cap_pct,
+          sub_assembly_structure_id: li.sub_assembly_structure_id,
+        })),
+        tags: draftTags.map((t: any) => ({ name: t.name, kind: t.kind })),
+      };
+      stmts.push(env.DB.prepare(`
+        INSERT INTO CONSTRUCTION_REVISION_SNAPSHOT (construction_revision_id, snapshot_json, taken_at)
+        VALUES (?, ?, ?)
+      `).bind(crId, JSON.stringify(snapshot), now));
     } else {
       // Use the latest existing CR for sell PP provenance
       const lastCr = await env.DB.prepare(`SELECT id FROM CONSTRUCTION_REVISION WHERE structure_id = ? ORDER BY revision_number DESC LIMIT 1`).bind(structureId).first<{ id: string }>();
@@ -1157,11 +1245,13 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
       `).bind(newPpId, structureId, bs.baseline_sell_price, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
     }
 
-    // Tag the new PP — default sell-2026 / cost-2026 + any sell-tag names supplied
-    const defaultTagName = subAsm ? 'cost-2026' : 'sell-2026';
-    const sellNamesIn = (body.sell_tag_names ?? []).filter((n) => n && n !== defaultTagName);
+    // Tag the new PP — engineer-supplied tags are authoritative.
+    // Only fall back to a sell-<year>/cost-<year> default if they
+    // didn't enter anything in the check-in dialog.
     const wantedKind = subAsm ? 'cost' : 'sell';
-    const wantedNames = [defaultTagName, ...sellNamesIn];
+    const supplied = (body.sell_tag_names ?? []).map((n) => n?.trim()).filter((n): n is string => !!n);
+    const fallback = subAsm ? 'cost-2026' : 'sell-2026';
+    const wantedNames = supplied.length > 0 ? supplied : [fallback];
 
     // Look up tag ids for the names; create them if missing (kind = sell or cost)
     for (const tagName of wantedNames) {

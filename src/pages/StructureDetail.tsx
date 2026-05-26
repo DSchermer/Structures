@@ -8,10 +8,16 @@ export default function StructureDetailPage({ id, currentUser }: { id: string; c
   const [showNewVariant, setShowNewVariant] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
 
+  // Honor ?at_cr=<id> in the URL: viewer renders the structure as of that CR.
+  const atCr = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('at_cr')
+    : null;
+
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`/api/structures/${id}`);
+        const url = atCr ? `/api/structures/${id}?at_cr=${atCr}` : `/api/structures/${id}`;
+        const r = await fetch(url);
         if (r.status === 404) { setData('notfound'); return; }
         const json = (await r.json()) as StructureDetail;
         setData(json);
@@ -19,7 +25,7 @@ export default function StructureDetailPage({ id, currentUser }: { id: string; c
         setData('error');
       }
     })();
-  }, [id]);
+  }, [id, atCr]);
 
   if (data === 'loading')  return <Frame><p className="text-ink-500">Loading…</p></Frame>;
   if (data === 'notfound') return <Frame><NotFound id={id} /></Frame>;
@@ -42,6 +48,16 @@ export default function StructureDetailPage({ id, currentUser }: { id: string; c
 
   return (
     <Frame>
+      {data.viewing_at && (
+        <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 flex items-center gap-3 text-sm">
+          <span className="text-amber-900">
+            Viewing this assembly as of <strong>Rev {data.viewing_at.revision_number ?? '?'}</strong>
+            {data.viewing_at.snapshot_taken_at && <span className="text-amber-700 ml-1">· snapshot taken {formatDate(data.viewing_at.snapshot_taken_at)}</span>}
+            {!data.viewing_at.snapshot_available && <span className="text-amber-700 ml-1">· snapshot not stored for this rev (showing current state)</span>}
+          </span>
+          <a href={`/structures/${data.id}`} className="ml-auto text-indigo-700 hover:underline font-medium">← back to current</a>
+        </div>
+      )}
       <DetailHeader
         d={data}
         currentUser={currentUser}
@@ -331,16 +347,13 @@ function PricesSection({ points, subassembly, crs }: {
   const sells = points.filter((p) => p.scope === 'structure_sell');
   const subs  = points.filter((p) => p.scope === 'subassembly_cost');
   const relevant = subassembly ? subs : sells;
-  // Map CR id → revision_number for quick lookup
+  // Map CR id → revision_number for the Rev column
   const crNumByCrId = new Map(crs.map((cr) => [cr.id, cr.revision_number]));
 
-  function jumpToCr(crId: string | null) {
+  function viewAtCr(crId: string | null) {
     if (!crId) return;
-    const el = document.getElementById(`cr-${crId}`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    el.classList.add('ring-2', 'ring-indigo-400', 'ring-offset-2', 'transition-shadow');
-    setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400', 'ring-offset-2', 'transition-shadow'), 2000);
+    const here = window.location.pathname;
+    window.location.href = `${here}?at_cr=${crId}`;
   }
 
   return (
@@ -366,13 +379,13 @@ function PricesSection({ points, subassembly, crs }: {
               return (
                 <tr
                   key={p.id}
-                  onClick={clickable ? () => jumpToCr(p.derived_from_cr) : undefined}
+                  onClick={clickable ? () => viewAtCr(p.derived_from_cr) : undefined}
                   className={
                     'border-t border-ink-100 ' +
                     (p.is_superseded ? 'opacity-50 ' : '') +
                     (clickable ? 'hover:bg-indigo-50/40 cursor-pointer' : '')
                   }
-                  title={clickable ? `Jump to Rev ${revNum} in the history below` : undefined}
+                  title={clickable ? `View this assembly as of Rev ${revNum}` : undefined}
                 >
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-1.5">

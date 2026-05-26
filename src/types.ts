@@ -135,4 +135,10 @@ export type StructureDetail = {
   base_id: string;
   siblings: Sibling[];
   spec_revisions: SpecRev[];
+  viewing_at?: {
+    cr_id: string;
+    revision_number: number | null;
+    snapshot_available: boolean;
+    snapshot_taken_at?: string;
+  };
 };
