@@ -40,6 +40,11 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
   if (url.pathname === '/api/components')  return handleComponents(env, url);
   if (url.pathname === '/api/price-points') return handlePricePoints(env, url);
 
+  let pm: RegExpMatchArray | null;
+  if ((pm = m(/^\/api\/price-points\/([0-9a-fA-F-]+)\/toggle-superseded$/)) && request.method === 'POST') {
+    return handleTogglePpSuperseded(env, pm[1], request);
+  }
+
   if (url.pathname === '/api/structures' && request.method === 'POST') {
     return handleCreateStructure(env, request);
   }
@@ -259,6 +264,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
   try {
     const component = url.searchParams.get('component');
     if (component) {
+      // BOM-picker mode: filter to one component
       const q = await env.DB.prepare(`
         SELECT pp.id, pp.price, pp.quote_number, pp.set_at,
                u.display_name AS set_by,
@@ -278,7 +284,57 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
       }));
       return json({ price_points: points });
     }
-    return json({ price_points: [] });
+    // Library mode: every PP with scope + tag info + linked structure
+    const ppsQ = await env.DB.prepare(`
+      SELECT pp.id, pp.scope, pp.price, pp.quote_number, pp.set_at,
+             pp.component_part_number,
+             u.display_name AS set_by,
+             s.id AS structure_id,
+             (sp.spec_number || s.part_number) AS structure_top_level_part_number
+      FROM PRICE_POINT pp
+      LEFT JOIN USER u ON u.id = pp.set_by_user_id
+      LEFT JOIN STRUCTURE s ON s.id = pp.structure_id
+      LEFT JOIN SPEC sp ON sp.id = s.spec_id
+      ORDER BY pp.set_at DESC, pp.id DESC
+    `).all<any>();
+    const tagsQ = await env.DB.prepare(`
+      SELECT ppt.price_point_id AS scope_id, t.name, t.kind, t.name_lower
+      FROM PRICE_POINT_TAG ppt JOIN TAG t ON t.id = ppt.tag_id
+    `).all<TagRow>();
+    const tagsByScope = group(tagsQ.results ?? [], (r) => r.scope_id);
+    const library = (ppsQ.results ?? []).map((p) => {
+      const tags = tagsByScope.get(p.id) ?? [];
+      const sys = tags.filter((t) => t.kind === 'system').map((t) => (t.name_lower ?? t.name).toLowerCase());
+      return {
+        id: p.id,
+        scope: p.scope,
+        price: p.price,
+        quote_number: p.quote_number,
+        set_at: p.set_at,
+        set_by: p.set_by,
+        component_part_number: p.component_part_number,
+        structure: p.structure_id ? { id: p.structure_id, top_level_part_number: p.structure_top_level_part_number } : null,
+        tags: tags.filter((t) => t.kind !== 'system').map((t) => ({ name: t.name, kind: t.kind })),
+        is_superseded: sys.includes('superseded'),
+      };
+    });
+    return json({ price_points: library });
+  } catch (err) {
+    return json({ error: msg(err) }, 500);
+  }
+}
+
+async function handleTogglePpSuperseded(env: Env, ppId: string, request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { current_user_id: string };
+    const SUPERSEDED_TAG_ID = '10000000-0000-0000-0000-000000000005';
+    const existing = await env.DB.prepare(`SELECT 1 FROM PRICE_POINT_TAG WHERE price_point_id = ? AND tag_id = ?`).bind(ppId, SUPERSEDED_TAG_ID).first();
+    if (existing) {
+      await env.DB.prepare(`DELETE FROM PRICE_POINT_TAG WHERE price_point_id = ? AND tag_id = ?`).bind(ppId, SUPERSEDED_TAG_ID).run();
+      return json({ ok: true, is_superseded: false });
+    }
+    await env.DB.prepare(`INSERT INTO PRICE_POINT_TAG (price_point_id, tag_id, applied_by_user_id, applied_at) VALUES (?, ?, ?, ?)`).bind(ppId, SUPERSEDED_TAG_ID, body.current_user_id, isoNow()).run();
+    return json({ ok: true, is_superseded: true });
   } catch (err) {
     return json({ error: msg(err) }, 500);
   }

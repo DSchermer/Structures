@@ -4,6 +4,7 @@ import StructureDetailPage from './pages/StructureDetail';
 import DraftEditor from './pages/DraftEditor';
 import InboxPage from './pages/Inbox';
 import AssignmentView from './pages/AssignmentView';
+import PricesPage from './pages/PricesPage';
 import type { Row, SearchResp, TagsResp, User, UsersResp } from './types';
 
 // ---------------- current user (localStorage) ----------------
@@ -71,6 +72,8 @@ export default function App() {
     body = <AssignmentView id={assignMatch[1]} currentUser={currentUser} />;
   } else if (path === '/inbox') {
     body = <InboxPage currentUser={currentUser} />;
+  } else if (path === '/prices') {
+    body = <PricesPage currentUser={currentUser} />;
   } else if (path === '/') {
     body = <SearchPage rows={rows} tags={tags} />;
   } else {
@@ -100,6 +103,12 @@ function Header({ users, currentUser, onPick }: { users: User[]; currentUser: Us
       <div className="mx-auto max-w-7xl px-6 py-3 flex items-center gap-4">
         <a href="/" className="text-sm font-mono text-ink-500 hover:text-indigo-700">structurev2</a>
         <span className="text-xs uppercase tracking-wider text-ink-400">prototype</span>
+        <a
+          href="/prices"
+          className="text-xs px-2 py-1 rounded hover:bg-ink-100 text-ink-500"
+        >
+          Prices
+        </a>
         <a
           href="/inbox"
           className={'text-xs px-2 py-1 rounded hover:bg-ink-100 ' + (currentUser?.role === 'order_management' ? 'text-indigo-700 font-medium' : 'text-ink-500')}
