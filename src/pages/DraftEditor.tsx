@@ -239,10 +239,10 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
       <div className="mt-6 space-y-6">
           {/* Header fields */}
           <Section title="Structure fields">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div className="flex flex-wrap gap-x-8 gap-y-3 text-sm items-end">
               <Field label="Part number" hint={`Live preview: ${topLevel || '—'}`}>
                 <input
-                  className="w-full font-mono px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-48 font-mono text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   value={draft.part_number ?? ''}
                   onChange={(e) => update('part_number', e.target.value)}
                   maxLength={25}
@@ -251,17 +251,16 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
               <Field label="Build hours" hint="> 0">
                 <input
                   type="number" step="0.5" min="0.1"
-                  className="w-full font-mono px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-20 text-right font-mono text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   value={draft.build_hours ?? ''}
                   onChange={(e) => update('build_hours', Number(e.target.value))}
                 />
               </Field>
-              <Field label="Target margin" hint="0.00 – 0.99 (e.g. 0.35 = 35%)">
-                <input
-                  type="number" step="0.01" min="0" max="0.99"
-                  className="w-full font-mono px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={draft.target_assembly_margin_pct ?? ''}
-                  onChange={(e) => update('target_assembly_margin_pct', Number(e.target.value))}
+              <Field label="Target margin" hint="0 – 99 percentage points">
+                <PercentInput
+                  value={draft.target_assembly_margin_pct ?? null}
+                  onChange={(v) => update('target_assembly_margin_pct', v as any)}
+                  min={0} max={99}
                 />
               </Field>
             </div>
@@ -369,6 +368,40 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <div className="text-[10px] text-ink-400 mt-1">{hint}</div>}
     </label>
+  );
+}
+
+// PercentInput — UI value is integer 0-99 (percentage points), stored as
+// decimal 0.00 – 0.99 on the model. Clamps at the boundaries.
+function PercentInput({ value, onChange, min = 0, max = 99, compact = false, placeholder }: {
+  value: number | null;
+  onChange: (v: number | null) => void;
+  min?: number;
+  max?: number;
+  compact?: boolean;
+  placeholder?: string;
+}) {
+  const display = value === null || value === undefined ? '' : String(Math.round(value * 100));
+  return (
+    <span className={'inline-flex items-center gap-0.5 rounded border ' + (compact ? 'border-amber-300 bg-white' : 'border-ink-200')}>
+      <input
+        type="number" step="1" min={min} max={max}
+        placeholder={placeholder}
+        className={'text-right font-mono bg-transparent focus:outline-none ' +
+          (compact
+            ? 'w-10 text-xs px-1 py-1'
+            : 'w-16 text-sm px-2 py-1.5')}
+        value={display}
+        onChange={(e) => {
+          if (e.target.value === '') { onChange(null); return; }
+          const raw = Number(e.target.value);
+          if (!Number.isFinite(raw)) return;
+          const clamped = Math.min(max, Math.max(min, raw));
+          onChange(clamped / 100);
+        }}
+      />
+      <span className={'text-ink-400 pr-1.5 ' + (compact ? 'text-[10px]' : 'text-xs')}>%</span>
+    </span>
   );
 }
 
@@ -568,12 +601,12 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
       </td>
       <td className="px-2 py-1">
         {line.is_commissioned ? (
-          <input
-            type="number" step="0.01" min="0.01" max="0.99"
-            className="w-16 text-right font-mono text-xs px-1 py-1 rounded border border-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
-            placeholder="0.05"
-            value={line.commission_cap_pct ?? ''}
-            onChange={(e) => onChange({ commission_cap_pct: Number(e.target.value) })}
+          <PercentInput
+            value={line.commission_cap_pct ?? null}
+            onChange={(v) => onChange({ commission_cap_pct: v })}
+            min={1} max={99}
+            compact
+            placeholder="5"
           />
         ) : (
           <span className="text-ink-300 text-xs">—</span>
