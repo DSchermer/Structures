@@ -162,8 +162,14 @@ function DetailHeader({ d, currentUser, checkingOut, onCheckOut, onNewVariant }:
            'base part'}
         </span>
         <span className="text-sm font-mono text-ink-500">
-          CR {d.current_construction_revision_number} · PR {d.current_price_revision_number}
+          Rev {d.current_construction_revision_number}
         </span>
+        {(() => {
+          const latestSell = d.price_points.find((p) => p.scope === 'structure_sell' || p.scope === 'subassembly_cost');
+          return latestSell ? (
+            <span className="text-xs text-ink-400">last priced {formatDate(latestSell.set_at)}</span>
+          ) : null;
+        })()}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -360,19 +366,12 @@ function PricesSection({ points, subassembly }: { points: PricePointDetail[]; su
 
 // ---------------- revisions ----------------
 
-function RevisionsSection({ crs, prs }: { crs: RevisionDetail[]; prs: RevisionDetail[] }) {
+function RevisionsSection({ crs, prs: _prs }: { crs: RevisionDetail[]; prs: RevisionDetail[] }) {
+  // Pricing history is implicit in the sell-PP list (already rendered above);
+  // we only surface the build-revision (CR) timeline here.
   return (
     <Section title="Revision history">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <h3 className="text-xs uppercase tracking-wide text-ink-500 mb-2">Construction (CR)</h3>
-          <RevList revs={crs} prefix="CR" />
-        </div>
-        <div>
-          <h3 className="text-xs uppercase tracking-wide text-ink-500 mb-2">Pricing (PR)</h3>
-          <RevList revs={prs} prefix="PR" />
-        </div>
-      </div>
+      <RevList revs={crs} prefix="Rev" />
     </Section>
   );
 }

@@ -215,7 +215,7 @@ function ResultRow({ row }: { row: Row }) {
            'base part'}
         </span>
         <span className="ml-auto text-xs font-mono text-ink-500">
-          {row.is_uncommitted_draft ? 'never checked in' : `CR ${row.current_construction_revision_number} · PR ${row.current_price_revision_number}`}
+          {row.is_uncommitted_draft ? 'never checked in' : `Rev ${row.current_construction_revision_number}`}
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">

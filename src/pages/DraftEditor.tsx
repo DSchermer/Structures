@@ -207,7 +207,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
              draft.live_current_construction_revision_number === 0 ? 'new base part' : 'revising live structure'}
           </span>
           <span className="text-sm font-mono text-ink-500">
-            Will commit as CR {draft.live_current_construction_revision_number + 1} · PR {draft.live_current_price_revision_number + 1}
+            Will commit as Rev {draft.live_current_construction_revision_number + 1}
           </span>
         </div>
 
@@ -890,13 +890,19 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
   currentUser: User;
   onClose: () => void;
 }) {
-  const [crNotes, setCrNotes] = useState('');
-  const [prNotes, setPrNotes] = useState('');
+  const [notes, setNotes] = useState('');
   const [sellTagName, setSellTagName] = useState('sell-2026');
   const [recipient, setRecipient] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
   const omUsers = users.filter((u) => u.role === 'order_management');
+
+  // Determine whether this is a build change (Rev bumps) or pricing-only.
+  // We can't detect this perfectly without re-querying the server, but we
+  // can heuristically: if it's a brand-new structure (CR=0) it always bumps.
+  // Otherwise the server's check-in cascade authoritatively decides.
+  const isBrandNew = draft.live_current_construction_revision_number === 0;
+  const nextRev = draft.live_current_construction_revision_number + 1;
 
   async function submit() {
     setSubmitting(true);
@@ -906,8 +912,8 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           current_user_id: currentUser.id,
-          cr_notes: crNotes || null,
-          pr_notes: prNotes || null,
+          cr_notes: notes || null,
+          pr_notes: null,
           sell_tag_names: [sellTagName],
           assigned_to_user_id: recipient || null,
           assignment_note: null,
@@ -926,7 +932,7 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
       open
       onClose={onClose}
       wide
-      title="Check in"
+      title={isBrandNew ? `Check in as Rev ${nextRev}` : `Check in — Rev ${draft.live_current_construction_revision_number} → Rev ${nextRev}`}
       footer={
         <>
           <button onClick={onClose} disabled={submitting} className="rounded-md border border-ink-300 px-3 py-1.5 text-sm hover:bg-ink-50">Cancel</button>
@@ -935,29 +941,25 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
       }
     >
       <div className="space-y-4 text-sm">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">
-          <Stat label="Baseline sell"  value={<span className="font-mono font-semibold text-ink-900">{usd(backsolved.baseline_sell_price)}</span>} />
+        <div className="grid grid-cols-3 gap-4 rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">
+          <Stat label="Baseline sell" value={<span className="font-mono font-semibold text-ink-900">{usd(backsolved.baseline_sell_price)}</span>} />
           <Stat label="Achieved margin" value={
             <span className={'font-mono ' + (backsolved.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
               {pct(backsolved.achieved_margin_pct)}{backsolved.is_below_target && ' (below)'}
             </span>
           } />
-          <Stat label="Will commit"    value={<span className="font-mono text-ink-900">CR {draft.live_current_construction_revision_number + 1} · PR {draft.live_current_price_revision_number + 1}</span>} />
           <Stat label="Lines" value={<span className="font-mono">{draft.lines.length}</span>} />
         </div>
 
-        <Field label="CR note (optional, surfaced to OM)">
-          <textarea className="w-full text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows={2} value={crNotes} onChange={(e) => setCrNotes(e.target.value)} />
+        <Field label="Revision note (optional, surfaced to OM)">
+          <textarea className="w-full text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder='e.g. "New variant for North Slope project — arctic body + low-temp packing."' />
         </Field>
-        <Field label="PR note (optional, internal)">
-          <textarea className="w-full text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows={2} value={prNotes} onChange={(e) => setPrNotes(e.target.value)} />
+        <Field label="Sell-price tag" hint="Defaults to the current sell year.">
+          <input className="w-40 text-sm font-mono px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" value={sellTagName} onChange={(e) => setSellTagName(e.target.value)} />
         </Field>
-        <Field label="Sell tag for the new structure_sell PRICE_POINT" hint="Defaulted to sell-2026.">
-          <input className="w-full text-sm font-mono px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" value={sellTagName} onChange={(e) => setSellTagName(e.target.value)} />
-        </Field>
-        <Field label="OM recipient (optional, CR commits only)" hint="Leave empty to commit without sending to OM.">
-          <select className="w-full text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" value={recipient} onChange={(e) => setRecipient(e.target.value)}>
-            <option value="">— don't assign —</option>
+        <Field label="Send to OM (optional)" hint="If the build changed and you pick a recipient, they get an inbox item. Pure pricing updates never go to OM regardless.">
+          <select className="w-72 text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" value={recipient} onChange={(e) => setRecipient(e.target.value)}>
+            <option value="">— don't send to OM —</option>
             {omUsers.map((u) => (
               <option key={u.id} value={u.id}>{u.display_name}</option>
             ))}
