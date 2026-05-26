@@ -449,19 +449,20 @@ function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, 
               <th className="px-2 py-1.5 text-left">Component</th>
               <th className="px-2 py-1.5 text-left">Description</th>
               <th className="px-2 py-1.5 text-right w-12">Qty</th>
-              <th className="px-2 py-1.5 text-left">Unit price (PP)</th>
+              <th className="px-2 py-1.5 text-left">Unit price</th>
               <th className="px-2 py-1.5 text-right w-20">Ext.</th>
               <th className="px-2 py-1.5 text-left">Supplier</th>
               <th className="px-2 py-1.5 text-left">Product code</th>
               <th className="px-2 py-1.5 text-right w-12">Lead</th>
               <th className="px-2 py-1.5 text-right w-16">Cap</th>
+              <th className="px-2 py-1.5 text-center w-8" title="Check to use a one-off override price instead of a PRICE_POINT.">Ovr.</th>
               <th className="px-2 py-1.5 text-center w-8" title={isCommissionedTable ? 'Uncheck to move back to standard.' : 'Check to move to commissioned.'}>Comm.</th>
               <th className="px-1 py-1.5 text-center w-8"></th>
             </tr>
           </thead>
           <tbody>
             {lines.length === 0 ? (
-              <tr><td colSpan={12} className="px-2 py-3 text-center text-ink-500 italic">No lines. Click "+ Add line" to create one.</td></tr>
+              <tr><td colSpan={13} className="px-2 py-3 text-center text-ink-500 italic">No lines. Click "+ Add line" to create one.</td></tr>
             ) : lines.map((line) => (
               <BomTableRow
                 key={line.id}
@@ -497,7 +498,8 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
     loadPps(line.component_part_number).then((rows) => {
       if (cancelled) return;
       setPps(rows);
-      if (!line.chosen_price_point_id && rows.length > 0) {
+      // Auto-pick a PP only if neither chosen_pp nor override is set.
+      if (!line.chosen_price_point_id && line.price_override === null && rows.length > 0) {
         const pick = rows.find((p) => !p.is_superseded) ?? rows[0];
         onChange({ chosen_price_point_id: pick.id, unit_price: pick.price, price_override: null });
       }
@@ -557,22 +559,39 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
         />
       </td>
       <td className="px-2 py-1 min-w-[200px]">
-        <select
-          className="w-full text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
-          value={line.chosen_price_point_id ?? ''}
-          onChange={(e) => {
-            const id = e.target.value || null;
-            const pp = pps?.find((p) => p.id === id);
-            onChange({ chosen_price_point_id: id, unit_price: pp?.price ?? null, price_override: null });
-          }}
-        >
-          <option value="">— pick price —</option>
-          {(pps ?? []).sort((a, b) => Number(a.is_superseded) - Number(b.is_superseded)).map((p) => (
-            <option key={p.id} value={p.id}>
-              {usd(p.price, true)} · {p.tags.join(', ') || '—'} · {p.quote_number ?? '—'}{p.is_superseded ? ' (superseded)' : ''}
-            </option>
-          ))}
-        </select>
+        {line.price_override !== null ? (
+          <span className="inline-flex items-center gap-0.5 rounded border border-amber-300 bg-white">
+            <span className="text-ink-400 text-xs pl-1.5">$</span>
+            <input
+              type="number" step="0.01" min="0"
+              className="w-24 text-right font-mono text-xs px-1 py-1 bg-transparent focus:outline-none"
+              placeholder="0.00"
+              value={line.price_override ?? ''}
+              onChange={(e) => {
+                const v = e.target.value === '' ? 0 : Number(e.target.value);
+                onChange({ price_override: v, unit_price: v });
+              }}
+            />
+            <span className="text-amber-700 text-[10px] pr-1.5 uppercase tracking-wide">override</span>
+          </span>
+        ) : (
+          <select
+            className="w-full text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+            value={line.chosen_price_point_id ?? ''}
+            onChange={(e) => {
+              const id = e.target.value || null;
+              const pp = pps?.find((p) => p.id === id);
+              onChange({ chosen_price_point_id: id, unit_price: pp?.price ?? null, price_override: null });
+            }}
+          >
+            <option value="">— pick price —</option>
+            {(pps ?? []).sort((a, b) => Number(a.is_superseded) - Number(b.is_superseded)).map((p) => (
+              <option key={p.id} value={p.id}>
+                {usd(p.price, true)} · {p.tags.join(', ') || '—'} · {p.quote_number ?? '—'}{p.is_superseded ? ' (superseded)' : ''}
+              </option>
+            ))}
+          </select>
+        )}
       </td>
       <td className="px-2 py-1 text-right font-mono text-ink-900">{line.unit_price !== null ? usd(ext, true) : '—'}</td>
       <td className="px-2 py-1 min-w-[120px]">
@@ -611,6 +630,22 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
         ) : (
           <span className="text-ink-300 text-xs">—</span>
         )}
+      </td>
+      <td className="px-2 py-1 text-center">
+        <input
+          type="checkbox"
+          checked={line.price_override !== null}
+          onChange={(e) => {
+            if (e.target.checked) {
+              const seed = line.unit_price ?? 0;
+              onChange({ price_override: seed, unit_price: seed, chosen_price_point_id: null });
+            } else {
+              // Clear override; auto-pick effect will re-select a PP for this component.
+              onChange({ price_override: null, unit_price: null });
+            }
+          }}
+          title={line.price_override !== null ? 'Uncheck to pick from the PRICE_POINT library.' : 'Check to enter a one-off override price instead.'}
+        />
       </td>
       <td className="px-2 py-1 text-center">
         <input
