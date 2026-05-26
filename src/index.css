@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Lock the whole app to light color scheme so native UI (select popups,
+   form controls, scrollbars) doesn't pick up the OS's dark mode. */
+:root {
+  color-scheme: light;
+}
+
 html, body, #root {
   height: 100%;
 }
