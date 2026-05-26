@@ -194,10 +194,16 @@ function ChipFacet({ label, kind, names, selected, onToggle }: {
 
 function ResultRow({ row }: { row: Row }) {
   const archived = row.is_archived;
+  const href = row.is_uncommitted_draft ? `/drafts/${row.id}` : `/structures/${row.id}`;
   return (
     <a
-      href={`/structures/${row.id}`}
-      className={'block rounded-md border bg-white px-4 py-3 hover:border-indigo-300 hover:shadow-sm transition ' + (archived ? 'border-ink-200 opacity-60' : 'border-ink-200')}
+      href={href}
+      className={
+        'block rounded-md border bg-white px-4 py-3 hover:border-indigo-300 hover:shadow-sm transition ' +
+        (archived ? 'border-ink-200 opacity-60' :
+         row.is_uncommitted_draft ? 'border-indigo-300 bg-indigo-50/40' :
+         'border-ink-200')
+      }
     >
       <div className="flex items-baseline gap-3 flex-wrap">
         <span className={'font-mono text-base font-medium text-ink-900 ' + (archived ? 'line-through' : '')}>
@@ -209,16 +215,17 @@ function ResultRow({ row }: { row: Row }) {
            'base part'}
         </span>
         <span className="ml-auto text-xs font-mono text-ink-500">
-          CR {row.current_construction_revision_number} · PR {row.current_price_revision_number}
+          {row.is_uncommitted_draft ? 'never checked in' : `CR ${row.current_construction_revision_number} · PR ${row.current_price_revision_number}`}
         </span>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {row.is_uncommitted_draft && <StatusBadge tone="amber">YOUR DRAFT — resume editing</StatusBadge>}
         {row.variant_tags.map((t) => <Chip key={`v-${t}`} kind="variant" name={t} />)}
         {row.general_tags.map((t) => <Chip key={`g-${t}`} kind="general" name={t} />)}
         {row.is_archived     && <StatusBadge tone="rose">ARCHIVED</StatusBadge>}
         {row.is_locked       && <StatusBadge tone="rose">LOCKED</StatusBadge>}
         {row.is_below_target && <StatusBadge tone="amber">BELOW TARGET</StatusBadge>}
-        {row.checkout_holder_name && (
+        {!row.is_uncommitted_draft && row.checkout_holder_name && (
           <StatusBadge tone="slate">
             checked out by {row.checkout_holder_name}
             {row.checkout_acquired_at ? ` · ${relativeTime(row.checkout_acquired_at)}` : ''}

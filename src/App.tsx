@@ -35,7 +35,6 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(loadCurrentUserId());
 
   useEffect(() => {
-    fetch('/api/search').then((r) => r.json() as Promise<SearchResp>).then((d) => setRows(d.rows)).catch(() => setRows('error'));
     fetch('/api/tags').then((r) => r.json() as Promise<TagsResp>).then(setTags).catch(() => {});
     fetch('/api/users').then((r) => r.json() as Promise<UsersResp>).then((d) => {
       setUsers(d.users);
@@ -46,6 +45,16 @@ export default function App() {
       }
     }).catch(() => {});
   }, []);
+
+  // Search results depend on current user (their own CR-0 drafts surface).
+  useEffect(() => {
+    if (!currentUserId) return;
+    setRows('loading');
+    fetch(`/api/search?user_id=${currentUserId}`)
+      .then((r) => r.json() as Promise<SearchResp>)
+      .then((d) => setRows(d.rows))
+      .catch(() => setRows('error'));
+  }, [currentUserId]);
 
   const currentUser = users.find((u) => u.id === currentUserId) ?? null;
 

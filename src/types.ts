@@ -21,7 +21,9 @@ export type Row = {
   is_locked: boolean;
   is_below_target: boolean;
   checkout_holder_name: string | null;
+  checkout_holder_id: string | null;
   checkout_acquired_at: string | null;
+  is_uncommitted_draft: boolean;
 };
 export type SearchResp = { rows: Row[] };
 export type TagsResp = { spec: string[]; general: string[]; variant: string[] };

@@ -33,7 +33,7 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
   const m = url.pathname.match.bind(url.pathname);
 
   if (url.pathname === '/api/health') return handleHealth(env);
-  if (url.pathname === '/api/search') return handleSearch(env);
+  if (url.pathname === '/api/search') return handleSearch(env, url);
   if (url.pathname === '/api/tags')    return handleTags(env);
   if (url.pathname === '/api/tag-ids') return handleTagIds(env);
   if (url.pathname === '/api/users')  return handleUsers(env);
@@ -109,8 +109,11 @@ interface SearchRow {
 }
 interface TagRow { scope_id: string; name: string; kind: string; name_lower?: string; }
 
-async function handleSearch(env: Env): Promise<Response> {
+async function handleSearch(env: Env, url: URL): Promise<Response> {
   try {
+    // §5.1: CR-0 (never-committed) drafts are hidden from everyone except
+    // the lock holder. If user_id is supplied, include their own CR-0 drafts.
+    const userId = url.searchParams.get('user_id') ?? '';
     const structuresQ = await env.DB.prepare(`
       SELECT
         s.id, s.spec_id, sp.spec_number, s.part_number,
@@ -127,6 +130,7 @@ async function handleSearch(env: Env): Promise<Response> {
          WHERE pp.structure_id = s.id AND pp.scope = 'subassembly_cost'
          ORDER BY pp.set_at DESC LIMIT 1) AS subassembly_cost,
         u.display_name AS checkout_holder_name,
+        cl.holder_user_id AS checkout_holder_id,
         cl.acquired_at AS checkout_acquired_at
       FROM STRUCTURE s
       JOIN SPEC sp ON sp.id = s.spec_id
@@ -134,8 +138,9 @@ async function handleSearch(env: Env): Promise<Response> {
       LEFT JOIN CHECKOUT_LOCK cl ON cl.structure_id = s.id
       LEFT JOIN USER u ON u.id = cl.holder_user_id
       WHERE s.current_construction_revision_number > 0
+         OR (s.current_construction_revision_number = 0 AND cl.holder_user_id = ?)
       ORDER BY sp.spec_number, (s.parent_structure_id IS NOT NULL), s.part_number
-    `).all<SearchRow>();
+    `).bind(userId).all<SearchRow & { checkout_holder_id: string | null }>();
 
     const specTagsQ = await env.DB.prepare(`
       SELECT st.spec_id AS scope_id, t.name, t.kind
@@ -175,7 +180,9 @@ async function handleSearch(env: Env): Promise<Response> {
         is_locked:       sys.includes('locked'),
         is_below_target: sys.includes('below-target'),
         checkout_holder_name: s.checkout_holder_name,
+        checkout_holder_id:   s.checkout_holder_id,
         checkout_acquired_at: s.checkout_acquired_at,
+        is_uncommitted_draft: s.current_construction_revision_number === 0,
       };
     });
 
@@ -500,9 +507,24 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
       return json({ error: 'part_number must be 1-25 characters' }, 400);
     }
 
-    // Uniqueness check
-    const dup = await env.DB.prepare(`SELECT id FROM STRUCTURE WHERE spec_id = ? AND part_number = ?`).bind(body.spec_id, partNumber).first();
-    if (dup) return json({ error: `Part number ${partNumber} already exists under this spec.` }, 409);
+    // Uniqueness check — also flag CR-0 drafts (invisible to non-holders)
+    const dup = await env.DB.prepare(`
+      SELECT s.id, s.current_construction_revision_number AS cr, cl.holder_user_id, u.display_name AS holder_name
+      FROM STRUCTURE s
+      LEFT JOIN CHECKOUT_LOCK cl ON cl.structure_id = s.id
+      LEFT JOIN USER u ON u.id = cl.holder_user_id
+      WHERE s.spec_id = ? AND s.part_number = ?
+    `).bind(body.spec_id, partNumber).first<{ id: string; cr: number; holder_user_id: string | null; holder_name: string | null }>();
+    if (dup) {
+      if (dup.cr === 0 && dup.holder_user_id) {
+        const yours = dup.holder_user_id === body.current_user_id;
+        const msg = yours
+          ? `You already have an in-progress draft named ${partNumber} under this spec. Resume it from the search results.`
+          : `${partNumber} is currently being drafted by ${dup.holder_name}. Coordinate with them or pick a different name.`;
+        return json({ error: msg, existing_id: dup.id }, 409);
+      }
+      return json({ error: `Part number ${partNumber} already exists under this spec.`, existing_id: dup.id }, 409);
+    }
 
     // Resolve spec_revision_id (most recent)
     const sr = await env.DB.prepare(`SELECT id FROM SPEC_REVISION WHERE spec_id = ? ORDER BY recorded_at DESC LIMIT 1`).bind(body.spec_id).first<{ id: string }>();
