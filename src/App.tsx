@@ -60,9 +60,9 @@ export default function App() {
 
   // Route dispatch
   let body: React.ReactNode;
-  const structMatch = path.match(/^\/structures\/([0-9a-f-]+)$/);
-  const draftMatch  = path.match(/^\/drafts\/([0-9a-f-]+)$/);
-  const assignMatch = path.match(/^\/assignments\/([0-9a-f-]+)$/);
+  const structMatch = path.match(/^\/structures\/([0-9a-fA-F-]+)$/);
+  const draftMatch  = path.match(/^\/drafts\/([0-9a-fA-F-]+)$/);
+  const assignMatch = path.match(/^\/assignments\/([0-9a-fA-F-]+)$/);
   if (draftMatch) {
     body = <DraftEditor id={draftMatch[1]} currentUser={currentUser} tags={tags} />;
   } else if (structMatch) {

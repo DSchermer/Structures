@@ -46,24 +46,24 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
   if (url.pathname === '/api/inbox') return handleInbox(env, url);
 
   let am: RegExpMatchArray | null;
-  if ((am = m(/^\/api\/assignments\/([0-9a-f-]+)$/)))                           return handleAssignment(env, am[1]);
-  if ((am = m(/^\/api\/assignments\/([0-9a-f-]+)\/acknowledge$/)) && request.method === 'POST') {
+  if ((am = m(/^\/api\/assignments\/([0-9a-fA-F-]+)$/)))                           return handleAssignment(env, am[1]);
+  if ((am = m(/^\/api\/assignments\/([0-9a-fA-F-]+)\/acknowledge$/)) && request.method === 'POST') {
     return handleAcknowledge(env, am[1], request);
   }
 
   let mm: RegExpMatchArray | null;
-  if ((mm = m(/^\/api\/structures\/([0-9a-f-]+)$/)))                       return handleStructure(env, mm[1]);
-  if ((mm = m(/^\/api\/structures\/([0-9a-f-]+)\/checkout$/)) && request.method === 'POST') {
+  if ((mm = m(/^\/api\/structures\/([0-9a-fA-F-]+)$/)))                       return handleStructure(env, mm[1]);
+  if ((mm = m(/^\/api\/structures\/([0-9a-fA-F-]+)\/checkout$/)) && request.method === 'POST') {
     return handleCheckout(env, mm[1], request);
   }
-  if ((mm = m(/^\/api\/drafts\/([0-9a-f-]+)$/))) {
+  if ((mm = m(/^\/api\/drafts\/([0-9a-fA-F-]+)$/))) {
     if (request.method === 'GET')   return handleGetDraft(env, mm[1]);
     if (request.method === 'PATCH') return handlePatchDraft(env, mm[1], request);
   }
-  if ((mm = m(/^\/api\/drafts\/([0-9a-f-]+)\/checkin$/)) && request.method === 'POST') {
+  if ((mm = m(/^\/api\/drafts\/([0-9a-fA-F-]+)\/checkin$/)) && request.method === 'POST') {
     return handleCheckin(env, mm[1], request);
   }
-  if ((mm = m(/^\/api\/drafts\/([0-9a-f-]+)\/discard$/)) && request.method === 'POST') {
+  if ((mm = m(/^\/api\/drafts\/([0-9a-fA-F-]+)\/discard$/)) && request.method === 'POST') {
     return handleDiscard(env, mm[1], request);
   }
 
