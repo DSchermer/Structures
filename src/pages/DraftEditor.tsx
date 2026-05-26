@@ -260,7 +260,11 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
 
           {/* BOM editor */}
           <Section title={`Bill of materials (${draft.lines.length} line${draft.lines.length === 1 ? '' : 's'})`} action={
-            <button onClick={addLine} className="rounded-md bg-indigo-600 text-white px-2 py-1 text-xs font-medium hover:bg-indigo-700">+ Add line</button>
+            <div className="flex items-baseline gap-3">
+              <span className="text-xs text-ink-500">Rolled-up cost</span>
+              <span className="font-mono text-sm font-semibold text-ink-900">{usd(bs.total_cost, true)}</span>
+              <button onClick={addLine} className="rounded-md bg-indigo-600 text-white px-2 py-1 text-xs font-medium hover:bg-indigo-700">+ Add line</button>
+            </div>
           }>
             {draft.lines.length === 0 ? (
               <p className="text-ink-500 italic">No lines yet. Click "+ Add line" to start.</p>
@@ -384,8 +388,18 @@ function BomLineEditor({ line, components, loadPps, onChange, onRemove }: {
 }) {
   const [pps, setPps] = useState<PpRow[] | null>(null);
   useEffect(() => {
-    if (line.component_part_number) loadPps(line.component_part_number).then(setPps);
-    else setPps(null);
+    if (!line.component_part_number) { setPps(null); return; }
+    let cancelled = false;
+    loadPps(line.component_part_number).then((rows) => {
+      if (cancelled) return;
+      setPps(rows);
+      // Auto-pick the most recent non-superseded PP if nothing is chosen yet.
+      if (!line.chosen_price_point_id && rows.length > 0) {
+        const pick = rows.find((p) => !p.is_superseded) ?? rows[0];
+        onChange({ chosen_price_point_id: pick.id, unit_price: pick.price, price_override: null });
+      }
+    });
+    return () => { cancelled = true; };
   }, [line.component_part_number]);
 
   const matches = useMemo(() => {
@@ -396,11 +410,18 @@ function BomLineEditor({ line, components, loadPps, onChange, onRemove }: {
 
   return (
     <div className="rounded-md border border-ink-200 p-3">
-      <div className="flex items-baseline gap-2 mb-2">
+      <div className="flex items-baseline gap-3 mb-2">
         <span className="text-xs text-ink-500 font-mono w-6">#{line.sort_order}</span>
-        <span className="text-xs text-ink-500">
-          {line.unit_price !== null && line.quantity > 0 ? `ext. ${usd((line.unit_price ?? 0) * line.quantity, true)}` : ''}
-        </span>
+        {line.unit_price !== null && line.quantity > 0 && (
+          <>
+            <span className="text-xs text-ink-500">
+              {usd(line.unit_price, true)} × {line.quantity}
+            </span>
+            <span className="text-sm font-mono font-medium text-ink-900">
+              = {usd((line.unit_price ?? 0) * line.quantity, true)}
+            </span>
+          </>
+        )}
         <button onClick={onRemove} className="ml-auto text-xs text-rose-600 hover:text-rose-800">remove</button>
       </div>
       <div className="grid grid-cols-12 gap-2 text-sm">
