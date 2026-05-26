@@ -56,7 +56,6 @@ export default function StructureDetailPage({ id, currentUser }: { id: string; c
             points={data.price_points}
             subassembly={data.is_subassembly}
             crs={data.construction_revisions}
-            currentTargetMarginPct={data.target_assembly_margin_pct}
           />
           <RevisionsSection crs={data.construction_revisions} prs={data.price_revisions} />
           <InstructionsSection build={data.build_instructions} work={data.work_instructions} />
@@ -324,11 +323,10 @@ function BomRow({ li }: { li: LineItemDetail }) {
 
 // ---------------- prices ----------------
 
-function PricesSection({ points, subassembly, crs, currentTargetMarginPct }: {
+function PricesSection({ points, subassembly, crs }: {
   points: PricePointDetail[];
   subassembly: boolean;
   crs: RevisionDetail[];
-  currentTargetMarginPct: number | null;
 }) {
   const sells = points.filter((p) => p.scope === 'structure_sell');
   const subs  = points.filter((p) => p.scope === 'subassembly_cost');
@@ -385,7 +383,7 @@ function PricesSection({ points, subassembly, crs, currentTargetMarginPct }: {
                     </div>
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-ink-900">{usd(p.price)}</td>
-                  <td className="px-3 py-2 text-right font-mono text-ink-700">{pct(currentTargetMarginPct)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-700">{p.target_assembly_margin_pct !== null ? pct(p.target_assembly_margin_pct) : '—'}</td>
                   <td className="px-3 py-2 text-ink-700 font-mono text-xs">
                     {revNum !== undefined && revNum !== null ? `Rev ${revNum}` : '—'}
                   </td>

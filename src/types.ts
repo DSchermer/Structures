@@ -81,6 +81,7 @@ export type PricePointDetail = {
   is_superseded: boolean;
   derived_from_cr: string | null;
   derived_from_pr: string | null;
+  target_assembly_margin_pct: number | null;
 };
 
 export type Sibling = {

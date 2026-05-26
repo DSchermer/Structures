@@ -287,7 +287,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
     // Library mode: every PP with scope + tag info + linked structure
     const ppsQ = await env.DB.prepare(`
       SELECT pp.id, pp.scope, pp.price, pp.quote_number, pp.set_at,
-             pp.component_part_number,
+             pp.component_part_number, pp.target_assembly_margin_pct,
              u.display_name AS set_by,
              s.id AS structure_id,
              (sp.spec_number || s.part_number) AS structure_top_level_part_number
@@ -316,6 +316,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
         structure: p.structure_id ? { id: p.structure_id, top_level_part_number: p.structure_top_level_part_number } : null,
         tags: tags.filter((t) => t.kind !== 'system').map((t) => ({ name: t.name, kind: t.kind })),
         is_superseded: sys.includes('superseded'),
+        target_assembly_margin_pct: p.target_assembly_margin_pct,
       };
     });
     return json({ price_points: library });
@@ -424,6 +425,7 @@ async function loadStructureDetail(env: Env, id: string): Promise<any | null> {
 
   const ppsQ = await env.DB.prepare(`
     SELECT pp.id, pp.price, pp.scope, pp.set_at, pp.derived_from_construction_revision_id, pp.derived_from_price_revision_id,
+           pp.target_assembly_margin_pct,
            u.display_name AS set_by_name
     FROM PRICE_POINT pp
     LEFT JOIN USER u ON u.id = pp.set_by_user_id
@@ -528,6 +530,7 @@ async function loadStructureDetail(env: Env, id: string): Promise<any | null> {
         is_superseded: sys.includes('superseded'),
         derived_from_cr: p.derived_from_construction_revision_id,
         derived_from_pr: p.derived_from_price_revision_id,
+        target_assembly_margin_pct: p.target_assembly_margin_pct,
       };
     }),
     base_id: baseId,
@@ -1134,22 +1137,24 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     `).bind(structureId).first();
     const subAsm = !!subAsmQ;
 
-    // Insert new structure_sell (or subassembly_cost) PP
+    // Insert new structure_sell (or subassembly_cost) PP — captures the
+    // target_assembly_margin_pct that was in force at this commit so the
+    // PP is self-describing.
     const newPpId = uuid();
     if (subAsm) {
       stmts.push(env.DB.prepare(`
         INSERT INTO PRICE_POINT (id, component_part_number, structure_id, scope, price, quote_number,
                                  derived_from_construction_revision_id, derived_from_price_revision_id,
-                                 set_by_user_id, set_at)
-        VALUES (?, NULL, ?, 'subassembly_cost', ?, NULL, ?, ?, ?, ?)
-      `).bind(newPpId, structureId, bs.total_cost, crId, prId, body.current_user_id, now));
+                                 target_assembly_margin_pct, set_by_user_id, set_at)
+        VALUES (?, NULL, ?, 'subassembly_cost', ?, NULL, ?, ?, ?, ?, ?)
+      `).bind(newPpId, structureId, bs.total_cost, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
     } else {
       stmts.push(env.DB.prepare(`
         INSERT INTO PRICE_POINT (id, component_part_number, structure_id, scope, price, quote_number,
                                  derived_from_construction_revision_id, derived_from_price_revision_id,
-                                 set_by_user_id, set_at)
-        VALUES (?, NULL, ?, 'structure_sell', ?, NULL, ?, ?, ?, ?)
-      `).bind(newPpId, structureId, bs.baseline_sell_price, crId, prId, body.current_user_id, now));
+                                 target_assembly_margin_pct, set_by_user_id, set_at)
+        VALUES (?, NULL, ?, 'structure_sell', ?, NULL, ?, ?, ?, ?, ?)
+      `).bind(newPpId, structureId, bs.baseline_sell_price, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
     }
 
     // Tag the new PP — default sell-2026 / cost-2026 + any sell-tag names supplied
