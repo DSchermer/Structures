@@ -52,13 +52,18 @@ export default function StructureDetailPage({ id, currentUser }: { id: string; c
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
         <div className="space-y-6 min-w-0">
           <BomSection lines={data.line_items} />
-          <PricesSection points={data.price_points} subassembly={data.is_subassembly} />
+          <PricesSection
+            points={data.price_points}
+            subassembly={data.is_subassembly}
+            crs={data.construction_revisions}
+            currentTargetMarginPct={data.target_assembly_margin_pct}
+          />
           <RevisionsSection crs={data.construction_revisions} prs={data.price_revisions} />
           <InstructionsSection build={data.build_instructions} work={data.work_instructions} />
         </div>
         <aside className="space-y-6">
-          {(data.parent || data.siblings.length > 1) && <SiblingsSidebar d={data} />}
           <MetaSidebar d={data} />
+          {(data.parent || data.siblings.length > 1) && <SiblingsSidebar d={data} />}
         </aside>
       </div>
       {showNewVariant && currentUser && (
@@ -319,10 +324,27 @@ function BomRow({ li }: { li: LineItemDetail }) {
 
 // ---------------- prices ----------------
 
-function PricesSection({ points, subassembly }: { points: PricePointDetail[]; subassembly: boolean }) {
+function PricesSection({ points, subassembly, crs, currentTargetMarginPct }: {
+  points: PricePointDetail[];
+  subassembly: boolean;
+  crs: RevisionDetail[];
+  currentTargetMarginPct: number | null;
+}) {
   const sells = points.filter((p) => p.scope === 'structure_sell');
   const subs  = points.filter((p) => p.scope === 'subassembly_cost');
   const relevant = subassembly ? subs : sells;
+  // Map CR id → revision_number for quick lookup
+  const crNumByCrId = new Map(crs.map((cr) => [cr.id, cr.revision_number]));
+
+  function jumpToCr(crId: string | null) {
+    if (!crId) return;
+    const el = document.getElementById(`cr-${crId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('ring-2', 'ring-indigo-400', 'ring-offset-2', 'transition-shadow');
+    setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400', 'ring-offset-2', 'transition-shadow'), 2000);
+  }
+
   return (
     <Section title={subassembly ? 'Sub-assembly cost' : 'Sell prices'}>
       {relevant.length === 0 ? (
@@ -333,30 +355,45 @@ function PricesSection({ points, subassembly }: { points: PricePointDetail[]; su
             <tr>
               <th className="px-3 py-2 text-left font-medium">Tags</th>
               <th className="px-3 py-2 text-right font-medium">Price</th>
+              <th className="px-3 py-2 text-right font-medium">Target margin</th>
+              <th className="px-3 py-2 text-left font-medium">Rev</th>
               <th className="px-3 py-2 text-left font-medium">Set by</th>
               <th className="px-3 py-2 text-left font-medium">Set at</th>
-              <th className="px-3 py-2 text-left font-medium">Basis</th>
             </tr>
           </thead>
           <tbody>
-            {relevant.sort((a, b) => Number(a.is_superseded) - Number(b.is_superseded)).map((p) => (
-              <tr key={p.id} className={'border-t border-ink-100 ' + (p.is_superseded ? 'opacity-50' : '')}>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {p.tags.map((t) => (
-                      <Chip key={t} kind={subassembly ? 'general' : 'spec'} name={t} />
-                    ))}
-                    {p.is_superseded && <StatusBadge tone="rose">SUPERSEDED</StatusBadge>}
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-right font-mono text-ink-900">{usd(p.price)}</td>
-                <td className="px-3 py-2 text-ink-700">{p.set_by ?? '—'}</td>
-                <td className="px-3 py-2 text-ink-500 text-xs font-mono">{formatDate(p.set_at)}</td>
-                <td className="px-3 py-2 text-xs text-ink-500 font-mono">
-                  {p.derived_from_cr ? <>CR-pinned</> : '—'}
-                </td>
-              </tr>
-            ))}
+            {relevant.sort((a, b) => Number(a.is_superseded) - Number(b.is_superseded)).map((p) => {
+              const revNum = p.derived_from_cr ? crNumByCrId.get(p.derived_from_cr) : null;
+              const clickable = p.derived_from_cr !== null && revNum !== undefined;
+              return (
+                <tr
+                  key={p.id}
+                  onClick={clickable ? () => jumpToCr(p.derived_from_cr) : undefined}
+                  className={
+                    'border-t border-ink-100 ' +
+                    (p.is_superseded ? 'opacity-50 ' : '') +
+                    (clickable ? 'hover:bg-indigo-50/40 cursor-pointer' : '')
+                  }
+                  title={clickable ? `Jump to Rev ${revNum} in the history below` : undefined}
+                >
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {p.tags.map((t) => (
+                        <Chip key={t} kind={subassembly ? 'general' : 'spec'} name={t} />
+                      ))}
+                      {p.is_superseded && <StatusBadge tone="rose">SUPERSEDED</StatusBadge>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-900">{usd(p.price)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-700">{pct(currentTargetMarginPct)}</td>
+                  <td className="px-3 py-2 text-ink-700 font-mono text-xs">
+                    {revNum !== undefined && revNum !== null ? `Rev ${revNum}` : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-ink-700">{p.set_by ?? '—'}</td>
+                  <td className="px-3 py-2 text-ink-500 text-xs font-mono">{formatDate(p.set_at)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -381,7 +418,11 @@ function RevList({ revs, prefix }: { revs: RevisionDetail[]; prefix: string }) {
   return (
     <ol className="space-y-2">
       {revs.map((r) => (
-        <li key={r.id} className="rounded border border-ink-100 px-3 py-2">
+        <li
+          key={r.id}
+          id={`cr-${r.id}`}
+          className="rounded border border-ink-100 px-3 py-2 scroll-mt-20"
+        >
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className="font-mono text-sm font-medium text-ink-900">{prefix} {r.revision_number}</span>
             <span className="text-xs text-ink-500">{r.author ?? 'unknown'} · {formatDate(r.committed_at)}</span>
