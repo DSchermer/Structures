@@ -247,17 +247,34 @@ function ChipFacet({ label, names, selected, onToggle, kind }: {
 }
 
 function PpRow({ p, onToggleSuperseded, canEdit }: { p: Pp; onToggleSuperseded: () => void; canEdit: boolean }) {
+  const href = p.structure ? `/structures/${p.structure.id}` : null;
+  const clickable = href !== null;
+  const onRowClick = clickable
+    ? (e: React.MouseEvent) => {
+        // ⌘/Ctrl-click → new tab; otherwise navigate in place
+        if (e.metaKey || e.ctrlKey) window.open(href!, '_blank');
+        else window.location.href = href!;
+      }
+    : undefined;
+  const onButtonClick = (e: React.MouseEvent) => { e.stopPropagation(); onToggleSuperseded(); };
   return (
-    <tr className={'border-t border-ink-100 align-top ' + (p.is_superseded ? 'opacity-60' : '')}>
+    <tr
+      className={
+        'border-t border-ink-100 align-top ' +
+        (p.is_superseded ? 'opacity-60 ' : '') +
+        (clickable ? 'hover:bg-indigo-50/40 cursor-pointer ' : '')
+      }
+      onClick={onRowClick}
+    >
       <td className="px-3 py-2">
         <ScopeBadge scope={p.scope} />
       </td>
       <td className="px-3 py-2">
         {p.component_part_number && <div className="font-mono text-ink-900">{p.component_part_number}</div>}
         {p.structure && (
-          <a href={`/structures/${p.structure.id}`} className="font-mono text-indigo-700 hover:underline">
+          <span className="font-mono text-indigo-700">
             {p.structure.top_level_part_number}
-          </a>
+          </span>
         )}
       </td>
       <td className={'px-3 py-2 text-right font-mono text-ink-900 ' + (p.is_superseded ? 'line-through' : '')}>{usd(p.price, true)}</td>
@@ -275,7 +292,7 @@ function PpRow({ p, onToggleSuperseded, canEdit }: { p: Pp; onToggleSuperseded: 
       <td className="px-3 py-2 text-right">
         {canEdit && (
           <button
-            onClick={onToggleSuperseded}
+            onClick={onButtonClick}
             className={'text-xs px-2 py-1 rounded border ' + (p.is_superseded
               ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50'
               : 'border-rose-300 text-rose-700 hover:bg-rose-50')}
