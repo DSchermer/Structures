@@ -38,7 +38,10 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
   if (url.pathname === '/api/tag-ids') return handleTagIds(env);
   if (url.pathname === '/api/users')  return handleUsers(env);
   if (url.pathname === '/api/components')  return handleComponents(env, url);
-  if (url.pathname === '/api/price-points') return handlePricePoints(env, url);
+  if (url.pathname === '/api/price-points') {
+    if (request.method === 'POST') return handleCreateComponentCostPp(env, request);
+    return handlePricePoints(env, url);
+  }
 
   let pm: RegExpMatchArray | null;
   if ((pm = m(/^\/api\/price-points\/([0-9a-fA-F-]+)\/toggle-superseded$/)) && request.method === 'POST') {
@@ -320,6 +323,59 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
       };
     });
     return json({ price_points: library });
+  } catch (err) {
+    return json({ error: msg(err) }, 500);
+  }
+}
+
+interface CreateComponentCostBody {
+  current_user_id: string;
+  component_part_number: string;
+  price: number;
+  quote_number: string;
+  tag_names?: string[];
+}
+
+async function handleCreateComponentCostPp(env: Env, request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as CreateComponentCostBody;
+    const component = (body.component_part_number ?? '').trim();
+    const quote = (body.quote_number ?? '').trim();
+    if (!body.current_user_id) return json({ error: 'current_user_id required' }, 400);
+    if (!component)             return json({ error: 'component_part_number required' }, 400);
+    if (component.startsWith(' ') || component.endsWith(' ')) return json({ error: 'component_part_number cannot have leading or trailing whitespace' }, 400);
+    if (typeof body.price !== 'number' || !Number.isFinite(body.price) || body.price < 0) return json({ error: 'price must be a non-negative number' }, 400);
+    if (!quote)                 return json({ error: 'quote_number required for component_cost PRICE_POINTs' }, 400);
+
+    const ppId = uuid();
+    const now = isoNow();
+    const stmts: D1PreparedStatement[] = [];
+
+    stmts.push(env.DB.prepare(`
+      INSERT INTO PRICE_POINT
+        (id, component_part_number, structure_id, scope, price, quote_number,
+         derived_from_construction_revision_id, derived_from_price_revision_id,
+         target_assembly_margin_pct, set_by_user_id, set_at)
+      VALUES (?, ?, NULL, 'component_cost', ?, ?, NULL, NULL, NULL, ?, ?)
+    `).bind(ppId, component, body.price, quote, body.current_user_id, now));
+
+    // Tags: get-or-create with kind='cost' (engineers create cost tags freely per §5.2)
+    const tagNames = (body.tag_names ?? []).map((n) => n?.trim()).filter((n): n is string => !!n);
+    for (const name of tagNames) {
+      const lower = name.toLowerCase();
+      const existing = await env.DB.prepare(`SELECT id FROM TAG WHERE name_lower = ? AND kind = 'cost'`).bind(lower).first<{ id: string }>();
+      let tagId: string;
+      if (existing) {
+        tagId = existing.id;
+      } else {
+        tagId = uuid();
+        stmts.push(env.DB.prepare(`INSERT INTO TAG (id, name, name_lower, kind) VALUES (?, ?, ?, 'cost')`).bind(tagId, name, lower));
+      }
+      stmts.push(env.DB.prepare(`INSERT INTO PRICE_POINT_TAG (price_point_id, tag_id, applied_by_user_id, applied_at) VALUES (?, ?, ?, ?)`).bind(ppId, tagId, body.current_user_id, now));
+    }
+
+    await env.DB.batch(stmts);
+    return json({ id: ppId });
   } catch (err) {
     return json({ error: msg(err) }, 500);
   }
