@@ -248,12 +248,10 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
                   maxLength={25}
                 />
               </Field>
-              <Field label="Build hours" hint="> 0">
-                <input
-                  type="number" step="0.5" min="0.1"
-                  className="w-20 text-right font-mono text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={draft.build_hours ?? ''}
-                  onChange={(e) => update('build_hours', Number(e.target.value))}
+              <Field label="Build hours" hint="step 0.5">
+                <HoursInput
+                  value={draft.build_hours ?? null}
+                  onChange={(v) => update('build_hours', v as any)}
                 />
               </Field>
               <Field label="Target margin" hint="0 – 99 percentage points">
@@ -368,6 +366,37 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <div className="text-[10px] text-ink-400 mt-1">{hint}</div>}
     </label>
+  );
+}
+
+// HoursInput — number input that snaps to 0.5 increments, formats blur
+// value as one-decimal (so 7 → 7.0), selects all on focus to avoid the
+// leading-zero quirk when the field starts at 0 or empty.
+function HoursInput({ value, onChange }: { value: number | null; onChange: (v: number | null) => void }) {
+  const [text, setText] = useState<string>(value !== null && value !== undefined ? value.toFixed(1) : '');
+  useEffect(() => {
+    setText(value !== null && value !== undefined ? value.toFixed(1) : '');
+  }, [value]);
+  return (
+    <input
+      type="number" step="0.5" min="0.5"
+      className="w-24 text-right font-mono text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      value={text}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => {
+        setText(e.target.value);
+        if (e.target.value === '') { onChange(null); return; }
+        const n = Number(e.target.value);
+        if (Number.isFinite(n)) onChange(n);
+      }}
+      onBlur={() => {
+        if (value === null || value === undefined) return;
+        // Snap to nearest 0.5, format with one decimal.
+        const snapped = Math.max(0.5, Math.round(value * 2) / 2);
+        setText(snapped.toFixed(1));
+        if (snapped !== value) onChange(snapped);
+      }}
+    />
   );
 }
 

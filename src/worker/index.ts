@@ -907,8 +907,8 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     if (!draft) return json({ error: 'No draft to check in' }, 409);
     const liveLines = await env.DB.prepare(`SELECT * FROM LINE_ITEM WHERE structure_id = ? ORDER BY sort_order`).bind(structureId).all<any>();
     const draftLines = await env.DB.prepare(`SELECT * FROM DRAFT_LINE_ITEM WHERE structure_id = ? ORDER BY sort_order`).bind(structureId).all<any>();
-    const liveTagsQ = await env.DB.prepare(`SELECT st.tag_id, t.kind FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id WHERE st.structure_id = ?`).bind(structureId).all<{ tag_id: string; kind: string }>();
-    const draftTagsQ = await env.DB.prepare(`SELECT dst.tag_id, t.kind, t.name_lower FROM DRAFT_STRUCTURE_TAG dst JOIN TAG t ON t.id = dst.tag_id WHERE dst.structure_id = ?`).bind(structureId).all<{ tag_id: string; kind: string; name_lower: string }>();
+    const liveTagsQ = await env.DB.prepare(`SELECT st.tag_id, t.kind, t.name FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id WHERE st.structure_id = ?`).bind(structureId).all<{ tag_id: string; kind: string; name: string }>();
+    const draftTagsQ = await env.DB.prepare(`SELECT dst.tag_id, t.kind, t.name, t.name_lower FROM DRAFT_STRUCTURE_TAG dst JOIN TAG t ON t.id = dst.tag_id WHERE dst.structure_id = ?`).bind(structureId).all<{ tag_id: string; kind: string; name: string; name_lower: string }>();
 
     // =====  GATES  =====
     // G2 always-required
@@ -1339,26 +1339,65 @@ function isPrChanged(live: any, draft: any, liveLines: any[], draftLines: any[])
 }
 
 function buildCrChangeSet(live: any, draft: any, liveLines: any[], draftLines: any[], liveTags: any[], draftTags: any[]): unknown {
-  const added = draftLines.filter((dl) => !liveLines.some((ll) => ll.id === dl.id)).length;
-  const removed = liveLines.filter((ll) => !draftLines.some((dl) => dl.id === ll.id)).length;
-  const modified = draftLines.filter((dl) => {
-    const ll = liveLines.find((l) => l.id === dl.id);
-    if (!ll) return false;
-    for (const f of ['component_part_number', 'part_description', 'quantity', 'supplier', 'lead_time_days', 'product_code']) {
-      if ((ll as any)[f] !== (dl as any)[f]) return true;
+  const liveById  = new Map(liveLines.map((l) => [l.id, l]));
+  const draftById = new Map(draftLines.map((l) => [l.id, l]));
+
+  const summarize = (l: any) => ({
+    sort_order: l.sort_order,
+    component: l.component_part_number,
+    description: l.part_description,
+    quantity: l.quantity,
+    supplier: l.supplier,
+    product_code: l.product_code,
+  });
+  const lineAdded   = draftLines.filter((dl) => !liveById.has(dl.id)).map(summarize);
+  const lineRemoved = liveLines.filter((ll) => !draftById.has(ll.id)).map(summarize);
+
+  const LINE_FIELDS = ['component_part_number', 'part_description', 'quantity', 'supplier', 'lead_time_days', 'product_code', 'sub_assembly_structure_id'];
+  const lineModified: Array<{ sort_order: number; component: string; fields: Array<{ field: string; old: unknown; new: unknown }> }> = [];
+  for (const dl of draftLines) {
+    const ll = liveById.get(dl.id);
+    if (!ll) continue;
+    const fields: Array<{ field: string; old: unknown; new: unknown }> = [];
+    for (const f of LINE_FIELDS) {
+      if ((ll as any)[f] !== (dl as any)[f]) {
+        fields.push({ field: f, old: (ll as any)[f], new: (dl as any)[f] });
+      }
     }
-    return false;
-  }).length;
-  const liveTagSet = new Set(liveTags.filter((t) => t.kind === 'general' || t.kind === 'variant').map((t) => t.tag_id));
-  const draftTagIds = draftTags.filter((t) => t.kind === 'general' || t.kind === 'variant').map((t: any) => t.tag_id);
-  const tagsAdded = draftTagIds.filter((id) => !liveTagSet.has(id)).length;
+    if (fields.length > 0) lineModified.push({ sort_order: dl.sort_order, component: dl.component_part_number, fields });
+  }
+
+  // Structure-level field diffs
+  const structureFields: Array<{ field: string; old: unknown; new: unknown }> = [];
+  const SF_NUMERIC = ['build_hours'];
+  const SF_TEXT = ['part_number', 'spec_revision_id', 'build_instr_1', 'build_instr_2', 'build_instr_3', 'build_instr_4', 'build_instr_5', 'work_instr_1', 'work_instr_2', 'work_instr_3', 'work_instr_4', 'work_instr_5'];
+  for (const f of SF_TEXT) {
+    if ((live as any)[f] !== (draft as any)[f]) {
+      structureFields.push({ field: f, old: (live as any)[f], new: (draft as any)[f] });
+    }
+  }
+  for (const f of SF_NUMERIC) {
+    if (Number((live as any)[f] ?? 0) !== Number((draft as any)[f] ?? 0)) {
+      structureFields.push({ field: f, old: (live as any)[f], new: (draft as any)[f] });
+    }
+  }
+
+  // Tag diffs (with names)
+  const liveTagMap  = new Map(liveTags.filter((t) => t.kind === 'general' || t.kind === 'variant').map((t) => [t.tag_id, { name: t.name, kind: t.kind }]));
+  const draftTagMap = new Map(draftTags.filter((t) => t.kind === 'general' || t.kind === 'variant').map((t: any) => [t.tag_id, { name: t.name, kind: t.kind }]));
+  const tagsAdded:   Array<{ name: string; kind: string }> = [];
+  const tagsRemoved: Array<{ name: string; kind: string }> = [];
+  for (const [id, t] of draftTagMap) if (!liveTagMap.has(id))  tagsAdded.push(t);
+  for (const [id, t] of liveTagMap)  if (!draftTagMap.has(id)) tagsRemoved.push(t);
+
   return {
-    line_items: { added, removed, modified },
-    tags: { added: tagsAdded },
-    structure_fields: {
-      part_number_changed: live.part_number !== draft.part_number,
-      build_hours_changed: Number(live.build_hours) !== Number(draft.build_hours),
+    line_items: {
+      added: lineAdded,
+      removed: lineRemoved,
+      modified: lineModified,
     },
+    structure_fields: structureFields,
+    tags: { added: tagsAdded, removed: tagsRemoved },
   };
 }
 
