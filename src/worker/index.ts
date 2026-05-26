@@ -706,6 +706,11 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
     `).bind(structureId).first<any>();
 
     const spec = await env.DB.prepare(`SELECT spec_number FROM SPEC WHERE id = ?`).bind(draft.spec_id).first<{ spec_number: string }>();
+    const specTagsQ = await env.DB.prepare(`
+      SELECT t.name FROM SPEC_TAG st JOIN TAG t ON t.id = st.tag_id
+      WHERE st.spec_id = ?
+      ORDER BY t.name
+    `).bind(draft.spec_id).all<{ name: string }>();
     const lines = await env.DB.prepare(`
       SELECT dli.*, pp.price AS chosen_price, sa.part_number AS sub_assembly_part_number
       FROM DRAFT_LINE_ITEM dli
@@ -756,6 +761,7 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
         sub_assembly_part_number: li.sub_assembly_part_number,
       })),
       tags: draftTags.results ?? [],
+      spec_tags: (specTagsQ.results ?? []).map((t) => t.name),
     });
   } catch (err) {
     return json({ error: msg(err) }, 500);

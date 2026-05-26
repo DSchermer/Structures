@@ -42,6 +42,7 @@ type Draft = {
   live_top_level_part_number: string;
   lines: DraftLine[];
   tags: DraftTag[];
+  spec_tags: string[];
 };
 
 type PpRow = { id: string; price: number; quote_number: string | null; set_at: string; set_by: string; tags: string[]; is_superseded: boolean };
@@ -235,8 +236,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
-        <div className="space-y-6 min-w-0">
+      <div className="mt-6 space-y-6">
           {/* Header fields */}
           <Section title="Structure fields">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -307,6 +307,16 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
             );
           })()}
 
+          {/* Tags — grouped by kind, only applied shown by default */}
+          <Section title="Tags">
+            <TagsPanel
+              draft={draft}
+              tags={tags}
+              onToggleVariant={(id, name) => toggleTag(id, name, 'variant')}
+              onToggleGeneral={(id, name) => toggleTag(id, name, 'general')}
+            />
+          </Section>
+
           {/* Instructions */}
           <Section title="Instructions">
             <InstructionsEditor
@@ -316,31 +326,6 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
               onChangeWork={(idx, v) => update(`work_instr_${idx + 1}` as keyof Draft, v as any)}
             />
           </Section>
-        </div>
-
-        <aside className="space-y-6">
-          {/* Variant tag editor (only for variants) */}
-          {draft.parent_structure_id && (
-            <Section title="Variant tags" hint="At least one required.">
-              <TagPicker
-                kind="variant"
-                names={tags?.variant ?? []}
-                selected={new Set(draft.tags.filter((t) => t.kind === 'variant').map((t) => t.id))}
-                allTags={tags}
-                onToggle={(id, name) => toggleTag(id, name, 'variant')}
-              />
-            </Section>
-          )}
-          <Section title="General tags">
-            <TagPicker
-              kind="general"
-              names={tags?.general ?? []}
-              selected={new Set(draft.tags.filter((t) => t.kind === 'general').map((t) => t.id))}
-              allTags={tags}
-              onToggle={(id, name) => toggleTag(id, name, 'general')}
-            />
-          </Section>
-        </aside>
       </div>
 
       {showCheckin && currentUser && (
@@ -609,54 +594,139 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
   );
 }
 
-// ---------- Tag picker ----------
+// ---------- Tag panel ----------
 
-function TagPicker({ kind, names, selected, allTags, onToggle }: {
-  kind: 'general' | 'variant';
-  names: string[];
-  selected: Set<string>;
-  allTags: TagsResp | null;
-  onToggle: (id: string, name: string) => void;
+function TagsPanel({ draft, tags, onToggleVariant, onToggleGeneral }: {
+  draft: Draft;
+  tags: TagsResp | null;
+  onToggleVariant: (id: string, name: string) => void;
+  onToggleGeneral: (id: string, name: string) => void;
 }) {
-  // We need tag IDs not just names for the API. Tags from /api/tags currently
-  // returns just names. For Phase 4 prototype, look up tag IDs from a small lookup endpoint... actually
-  // we'll fetch each tag's id by name via a single /api/tags-detailed if needed.
-  // Quick fix: encode the tag id as the lowercase name (since the worker tolerates
-  // ID lookups). Instead, we'll re-fetch tags WITH ids:
   const [tagIds, setTagIds] = useState<Map<string, string>>(new Map());
   useEffect(() => {
-    fetch(`/api/structures/_dummy`).catch(() => {}); // no-op
-    // Fetch tag IDs (we don't have a dedicated endpoint — workaround:
-    // grab them from a structure detail that has variant/general tags).
-    // Simpler: hit /api/tags?with_ids=1 — but worker doesn't support that yet.
-    // For prototype: encode tag ID = name_lower-based UUID lookup via search.
-    // ACTUAL FIX: small lookup endpoint /api/tag-ids returning {name+kind → id}.
-    // For now we look them up via a /api/tag-ids call.
     fetch('/api/tag-ids').then((r) => r.json()).then((d: { tags: Array<{ id: string; name: string; kind: string }> }) => {
       const map = new Map<string, string>();
       for (const t of d.tags) map.set(`${t.kind}:${t.name}`, t.id);
       setTagIds(map);
     }).catch(() => {});
-  }, [allTags]);
+  }, []);
+
+  const appliedGeneral = draft.tags.filter((t) => t.kind === 'general');
+  const appliedVariant = draft.tags.filter((t) => t.kind === 'variant');
+  const isVariant = draft.parent_structure_id !== null;
 
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {names.length === 0 && <p className="text-xs text-ink-500 italic">No tags of this kind yet.</p>}
-      {names.map((name) => {
-        const id = tagIds.get(`${kind}:${name}`);
-        if (!id) return null;
-        const active = selected.has(id);
-        return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {/* Spec tags — read-only context */}
+      <TagGroup
+        label="Spec tags"
+        hint="Inherited from the parent spec. Edit on the spec itself, not here."
+        kind="spec"
+        applied={draft.spec_tags.map((name) => ({ id: name, name }))}
+        available={[]}
+        canEdit={false}
+        onToggle={() => {}}
+      />
+
+      {/* General tags */}
+      <TagGroup
+        label="General tags"
+        hint="Apply to this individual structure."
+        kind="general"
+        applied={appliedGeneral.map((t) => ({ id: t.id, name: t.name }))}
+        available={(tags?.general ?? [])
+          .filter((n) => !appliedGeneral.some((a) => a.name === n))
+          .map((n) => ({ id: tagIds.get(`general:${n}`) ?? '', name: n }))
+          .filter((t) => t.id)}
+        canEdit
+        onToggle={onToggleGeneral}
+      />
+
+      {/* Variant tags — only for variants */}
+      {isVariant && (
+        <TagGroup
+          label="Variant tags"
+          hint="At least one required for a variant to check in."
+          kind="variant"
+          applied={appliedVariant.map((t) => ({ id: t.id, name: t.name }))}
+          available={(tags?.variant ?? [])
+            .filter((n) => !appliedVariant.some((a) => a.name === n))
+            .map((n) => ({ id: tagIds.get(`variant:${n}`) ?? '', name: n }))
+            .filter((t) => t.id)}
+          canEdit
+          onToggle={onToggleVariant}
+        />
+      )}
+    </div>
+  );
+}
+
+function TagGroup({ label, hint, kind, applied, available, canEdit, onToggle }: {
+  label: string;
+  hint: string;
+  kind: 'spec' | 'general' | 'variant';
+  applied: Array<{ id: string; name: string }>;
+  available: Array<{ id: string; name: string }>;
+  canEdit: boolean;
+  onToggle: (id: string, name: string) => void;
+}) {
+  const [showAvailable, setShowAvailable] = useState(false);
+  return (
+    <div>
+      <div className="mb-1.5">
+        <h3 className="text-xs uppercase tracking-wide font-semibold text-ink-600">{label}</h3>
+        <p className="text-[10px] text-ink-500 mt-0.5">{hint}</p>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {applied.length === 0 && <span className="text-xs text-ink-400 italic">none applied</span>}
+        {applied.map((t) => (
+          canEdit ? (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onToggle(t.id, t.name)}
+              className={'group inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset transition ' + tagStyle(kind, true)}
+              title="Click to remove"
+            >
+              {t.name}
+              <span className="opacity-0 group-hover:opacity-100 text-[10px]">×</span>
+            </button>
+          ) : (
+            <span
+              key={t.id}
+              className={'inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ' + tagStyle(kind, false)}
+            >
+              {t.name}
+            </span>
+          )
+        ))}
+      </div>
+      {canEdit && available.length > 0 && (
+        <div className="mt-2">
           <button
-            key={name}
             type="button"
-            onClick={() => onToggle(id, name)}
-            className={'rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset transition ' + tagStyle(kind, active)}
+            onClick={() => setShowAvailable((v) => !v)}
+            className="text-[11px] text-indigo-600 hover:text-indigo-800 hover:underline"
           >
-            {name}
+            {showAvailable ? `− Hide available (${available.length})` : `+ Show ${available.length} available tag${available.length === 1 ? '' : 's'}`}
           </button>
-        );
-      })}
+          {showAvailable && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {available.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => onToggle(t.id, t.name)}
+                  className={'rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset transition ' + tagStyle(kind, false)}
+                  title="Click to apply"
+                >
+                  + {t.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
