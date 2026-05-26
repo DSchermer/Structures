@@ -85,14 +85,14 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
       return { ...prev, [key]: value };
     });
   }
-  function updateLine(idx: number, patch: Partial<DraftLine>) {
+  function updateLine(id: string, patch: Partial<DraftLine>) {
     setDraft((prev) => {
       if (typeof prev !== 'object') return prev;
-      const lines = prev.lines.map((l, i) => i === idx ? { ...l, ...patch } : l);
+      const lines = prev.lines.map((l) => l.id === id ? { ...l, ...patch } : l);
       return { ...prev, lines };
     });
   }
-  function addLine() {
+  function addLine(commissioned = false) {
     setDraft((prev) => {
       if (typeof prev !== 'object') return prev;
       const nextSort = prev.lines.length === 0 ? 1 : Math.max(...prev.lines.map((l) => l.sort_order)) + 1;
@@ -108,18 +108,27 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
         supplier: '',
         lead_time_days: 14,
         product_code: '',
-        is_commissioned: false,
-        commission_cap_pct: null,
+        is_commissioned: commissioned,
+        commission_cap_pct: commissioned ? 0.05 : null,
         sub_assembly_structure_id: null,
         sub_assembly_part_number: null,
       };
       return { ...prev, lines: [...prev.lines, newLine] };
     });
   }
-  function removeLine(idx: number) {
+  function removeLine(id: string) {
     setDraft((prev) => {
       if (typeof prev !== 'object') return prev;
-      const lines = prev.lines.filter((_, i) => i !== idx).map((l, i) => ({ ...l, sort_order: i + 1 }));
+      const lines = prev.lines.filter((l) => l.id !== id).map((l, i) => ({ ...l, sort_order: i + 1 }));
+      return { ...prev, lines };
+    });
+  }
+  function toggleCommissioned(id: string) {
+    setDraft((prev) => {
+      if (typeof prev !== 'object') return prev;
+      const lines = prev.lines.map((l) => l.id === id
+        ? { ...l, is_commissioned: !l.is_commissioned, commission_cap_pct: !l.is_commissioned ? (l.commission_cap_pct ?? 0.05) : null }
+        : l);
       return { ...prev, lines };
     });
   }
@@ -258,31 +267,45 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
             </div>
           </Section>
 
-          {/* BOM editor */}
-          <Section title={`Bill of materials (${draft.lines.length} line${draft.lines.length === 1 ? '' : 's'})`} action={
-            <div className="flex items-baseline gap-3">
-              <span className="text-xs text-ink-500">Rolled-up cost</span>
-              <span className="font-mono text-sm font-semibold text-ink-900">{usd(bs.total_cost, true)}</span>
-              <button onClick={addLine} className="rounded-md bg-indigo-600 text-white px-2 py-1 text-xs font-medium hover:bg-indigo-700">+ Add line</button>
-            </div>
-          }>
-            {draft.lines.length === 0 ? (
-              <p className="text-ink-500 italic">No lines yet. Click "+ Add line" to start.</p>
-            ) : (
-              <div className="space-y-2">
-                {draft.lines.map((line, i) => (
-                  <BomLineEditor
-                    key={line.id}
-                    line={line}
+          {/* BOM editor — two sub-tables, same columns, different labels */}
+          {(() => {
+            const standard     = draft.lines.filter((l) => !l.is_commissioned).sort((a, b) => a.sort_order - b.sort_order);
+            const commissioned = draft.lines.filter((l) =>  l.is_commissioned).sort((a, b) => a.sort_order - b.sort_order);
+            return (
+              <Section title={`Bill of materials (${draft.lines.length} line${draft.lines.length === 1 ? '' : 's'})`} action={
+                <div className="flex items-baseline gap-3">
+                  <span className="text-xs text-ink-500">Rolled-up cost</span>
+                  <span className="font-mono text-sm font-semibold text-ink-900">{usd(bs.total_cost, true)}</span>
+                </div>
+              }>
+                <div className="space-y-6">
+                  <BomSubTable
+                    label="Standard line items"
+                    lines={standard}
+                    isCommissionedTable={false}
                     components={components}
                     loadPps={loadPps}
-                    onChange={(p) => updateLine(i, p)}
-                    onRemove={() => removeLine(i)}
+                    onUpdate={updateLine}
+                    onRemove={removeLine}
+                    onToggleCommissioned={toggleCommissioned}
+                    onAdd={() => addLine(false)}
                   />
-                ))}
-              </div>
-            )}
-          </Section>
+                  <BomSubTable
+                    label="Commissioned line items"
+                    sublabel="Each commissioned line earns at most its cap; the back-solve loads the remaining margin onto the standard lines."
+                    lines={commissioned}
+                    isCommissionedTable
+                    components={components}
+                    loadPps={loadPps}
+                    onUpdate={updateLine}
+                    onRemove={removeLine}
+                    onToggleCommissioned={toggleCommissioned}
+                    onAdd={() => addLine(true)}
+                  />
+                </div>
+              </Section>
+            );
+          })()}
 
           {/* Instructions */}
           <Section title="Instructions">
@@ -377,14 +400,77 @@ function Section({ title, children, action, hint }: { title: string; children: R
   );
 }
 
-// ---------- BOM line editor ----------
+// ---------- BOM sub-tables ----------
 
-function BomLineEditor({ line, components, loadPps, onChange, onRemove }: {
-  line: DraftLine;
+function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, loadPps, onUpdate, onRemove, onToggleCommissioned, onAdd }: {
+  label: string;
+  sublabel?: string;
+  lines: DraftLine[];
+  isCommissionedTable: boolean;
   components: string[];
-  loadPps: (component: string) => Promise<PpRow[]>;
+  loadPps: (c: string) => Promise<PpRow[]>;
+  onUpdate: (id: string, patch: Partial<DraftLine>) => void;
+  onRemove: (id: string) => void;
+  onToggleCommissioned: (id: string) => void;
+  onAdd: () => void;
+}) {
+  const subtotal = lines.reduce((s, l) => s + (l.unit_price ?? 0) * (l.quantity ?? 0), 0);
+  return (
+    <div>
+      <div className="flex items-baseline gap-3 mb-1.5">
+        <h3 className={'text-xs uppercase tracking-wide font-semibold ' + (isCommissionedTable ? 'text-amber-800' : 'text-ink-600')}>{label}</h3>
+        <span className="text-xs text-ink-500">{lines.length} line{lines.length === 1 ? '' : 's'} · subtotal <span className="font-mono">{usd(subtotal, true)}</span></span>
+        <button onClick={onAdd} className="ml-auto rounded-md border border-indigo-300 text-indigo-700 px-2 py-0.5 text-xs font-medium hover:bg-indigo-50">+ Add line</button>
+      </div>
+      {sublabel && <p className="text-xs text-ink-500 mb-1.5">{sublabel}</p>}
+      <div className="overflow-x-auto rounded-md border border-ink-200">
+        <table className="w-full text-xs">
+          <thead className={'text-ink-500 uppercase tracking-wide text-[10px] ' + (isCommissionedTable ? 'bg-amber-50' : 'bg-ink-50')}>
+            <tr>
+              <th className="px-2 py-1.5 text-left w-8">#</th>
+              <th className="px-2 py-1.5 text-left">Component</th>
+              <th className="px-2 py-1.5 text-left">Description</th>
+              <th className="px-2 py-1.5 text-right w-12">Qty</th>
+              <th className="px-2 py-1.5 text-left">Unit price (PP)</th>
+              <th className="px-2 py-1.5 text-right w-20">Ext.</th>
+              <th className="px-2 py-1.5 text-left">Supplier</th>
+              <th className="px-2 py-1.5 text-left">Product code</th>
+              <th className="px-2 py-1.5 text-right w-12">Lead</th>
+              <th className="px-2 py-1.5 text-right w-16">Cap</th>
+              <th className="px-2 py-1.5 text-center w-8" title={isCommissionedTable ? 'Uncheck to move back to standard.' : 'Check to move to commissioned.'}>Comm.</th>
+              <th className="px-1 py-1.5 text-center w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.length === 0 ? (
+              <tr><td colSpan={12} className="px-2 py-3 text-center text-ink-500 italic">No lines. Click "+ Add line" to create one.</td></tr>
+            ) : lines.map((line) => (
+              <BomTableRow
+                key={line.id}
+                line={line}
+                isCommissionedTable={isCommissionedTable}
+                components={components}
+                loadPps={loadPps}
+                onChange={(patch) => onUpdate(line.id, patch)}
+                onRemove={() => onRemove(line.id)}
+                onToggleCommissioned={() => onToggleCommissioned(line.id)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange, onRemove, onToggleCommissioned }: {
+  line: DraftLine;
+  isCommissionedTable: boolean;
+  components: string[];
+  loadPps: (c: string) => Promise<PpRow[]>;
   onChange: (patch: Partial<DraftLine>) => void;
   onRemove: () => void;
+  onToggleCommissioned: () => void;
 }) {
   const [pps, setPps] = useState<PpRow[] | null>(null);
   useEffect(() => {
@@ -393,7 +479,6 @@ function BomLineEditor({ line, components, loadPps, onChange, onRemove }: {
     loadPps(line.component_part_number).then((rows) => {
       if (cancelled) return;
       setPps(rows);
-      // Auto-pick the most recent non-superseded PP if nothing is chosen yet.
       if (!line.chosen_price_point_id && rows.length > 0) {
         const pick = rows.find((p) => !p.is_superseded) ?? rows[0];
         onChange({ chosen_price_point_id: pick.id, unit_price: pick.price, price_override: null });
@@ -408,126 +493,115 @@ function BomLineEditor({ line, components, loadPps, onChange, onRemove }: {
     return components.filter((c) => c.toLowerCase().startsWith(q) && c !== line.component_part_number).slice(0, 6);
   }, [components, line.component_part_number]);
 
-  return (
-    <div className="rounded-md border border-ink-200 p-3">
-      <div className="flex items-baseline gap-3 mb-2">
-        <span className="text-xs text-ink-500 font-mono w-6">#{line.sort_order}</span>
-        {line.unit_price !== null && line.quantity > 0 && (
-          <>
-            <span className="text-xs text-ink-500">
-              {usd(line.unit_price, true)} × {line.quantity}
-            </span>
-            <span className="text-sm font-mono font-medium text-ink-900">
-              = {usd((line.unit_price ?? 0) * line.quantity, true)}
-            </span>
-          </>
-        )}
-        <button onClick={onRemove} className="ml-auto text-xs text-rose-600 hover:text-rose-800">remove</button>
-      </div>
-      <div className="grid grid-cols-12 gap-2 text-sm">
-        <div className="col-span-12 md:col-span-4 relative">
-          <input
-            className="w-full font-mono text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Component part number"
-            value={line.component_part_number}
-            onChange={(e) => onChange({ component_part_number: e.target.value, chosen_price_point_id: null, unit_price: null })}
-          />
-          {matches.length > 0 && (
-            <div className="absolute z-10 mt-0.5 w-full bg-white border border-ink-200 rounded-md shadow-md max-h-48 overflow-y-auto">
-              {matches.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => onChange({ component_part_number: m, chosen_price_point_id: null, unit_price: null })}
-                  className="block w-full text-left px-2 py-1 font-mono text-xs hover:bg-indigo-50"
-                >{m}</button>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="col-span-12 md:col-span-4">
-          <input
-            className="w-full text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Description"
-            value={line.part_description}
-            onChange={(e) => onChange({ part_description: e.target.value })}
-          />
-        </div>
-        <div className="col-span-3 md:col-span-1">
-          <input
-            type="number" step="1" min="1"
-            className="w-full font-mono text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            value={line.quantity}
-            onChange={(e) => onChange({ quantity: Number(e.target.value) })}
-          />
-        </div>
-        <div className="col-span-9 md:col-span-3">
-          <select
-            className="w-full text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            value={line.chosen_price_point_id ?? ''}
-            onChange={(e) => {
-              const id = e.target.value || null;
-              const pp = pps?.find((p) => p.id === id);
-              onChange({ chosen_price_point_id: id, unit_price: pp?.price ?? null, price_override: null });
-            }}
-          >
-            <option value="">— pick price —</option>
-            {(pps ?? []).sort((a, b) => Number(a.is_superseded) - Number(b.is_superseded)).map((p) => (
-              <option key={p.id} value={p.id}>
-                {usd(p.price, true)} · {p.tags.join(', ')} · {p.quote_number ?? '—'} {p.is_superseded ? '(superseded)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
+  const ext = (line.unit_price ?? 0) * (line.quantity ?? 0);
 
-        <div className="col-span-4 md:col-span-3">
+  return (
+    <tr className="border-t border-ink-100 align-top hover:bg-ink-50/40">
+      <td className="px-2 py-1 font-mono text-ink-400">{line.sort_order}</td>
+      <td className="px-2 py-1 relative min-w-[140px]">
+        <input
+          className="w-full font-mono text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+          placeholder="Part number"
+          value={line.component_part_number}
+          onChange={(e) => onChange({ component_part_number: e.target.value, chosen_price_point_id: null, unit_price: null })}
+        />
+        {matches.length > 0 && (
+          <div className="absolute z-20 left-2 right-2 mt-0.5 bg-white border border-ink-200 rounded-md shadow-md max-h-48 overflow-y-auto">
+            {matches.map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onChange({ component_part_number: m, chosen_price_point_id: null, unit_price: null })}
+                className="block w-full text-left px-2 py-1 font-mono text-xs hover:bg-indigo-50"
+              >{m}</button>
+            ))}
+          </div>
+        )}
+      </td>
+      <td className="px-2 py-1 min-w-[180px]">
+        <input
+          className="w-full text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+          placeholder="Description"
+          value={line.part_description}
+          onChange={(e) => onChange({ part_description: e.target.value })}
+        />
+      </td>
+      <td className="px-2 py-1">
+        <input
+          type="number" step="1" min="1"
+          className="w-12 text-right font-mono text-xs px-1 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+          value={line.quantity}
+          onChange={(e) => onChange({ quantity: Number(e.target.value) })}
+        />
+      </td>
+      <td className="px-2 py-1 min-w-[200px]">
+        <select
+          className="w-full text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+          value={line.chosen_price_point_id ?? ''}
+          onChange={(e) => {
+            const id = e.target.value || null;
+            const pp = pps?.find((p) => p.id === id);
+            onChange({ chosen_price_point_id: id, unit_price: pp?.price ?? null, price_override: null });
+          }}
+        >
+          <option value="">— pick price —</option>
+          {(pps ?? []).sort((a, b) => Number(a.is_superseded) - Number(b.is_superseded)).map((p) => (
+            <option key={p.id} value={p.id}>
+              {usd(p.price, true)} · {p.tags.join(', ') || '—'} · {p.quote_number ?? '—'}{p.is_superseded ? ' (superseded)' : ''}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td className="px-2 py-1 text-right font-mono text-ink-900">{line.unit_price !== null ? usd(ext, true) : '—'}</td>
+      <td className="px-2 py-1 min-w-[120px]">
+        <input
+          className="w-full text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+          placeholder="Supplier"
+          value={line.supplier}
+          onChange={(e) => onChange({ supplier: e.target.value })}
+        />
+      </td>
+      <td className="px-2 py-1 min-w-[120px]">
+        <input
+          className="w-full text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent font-mono"
+          placeholder="Product code"
+          value={line.product_code}
+          onChange={(e) => onChange({ product_code: e.target.value })}
+        />
+      </td>
+      <td className="px-2 py-1">
+        <input
+          type="number" step="1" min="0"
+          className="w-12 text-right font-mono text-xs px-1 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
+          value={line.lead_time_days}
+          onChange={(e) => onChange({ lead_time_days: Number(e.target.value) })}
+        />
+      </td>
+      <td className="px-2 py-1">
+        {line.is_commissioned ? (
           <input
-            className="w-full text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Supplier"
-            value={line.supplier}
-            onChange={(e) => onChange({ supplier: e.target.value })}
+            type="number" step="0.01" min="0.01" max="0.99"
+            className="w-16 text-right font-mono text-xs px-1 py-1 rounded border border-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
+            placeholder="0.05"
+            value={line.commission_cap_pct ?? ''}
+            onChange={(e) => onChange({ commission_cap_pct: Number(e.target.value) })}
           />
-        </div>
-        <div className="col-span-4 md:col-span-2">
-          <input
-            className="w-full text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Product code"
-            value={line.product_code}
-            onChange={(e) => onChange({ product_code: e.target.value })}
-          />
-        </div>
-        <div className="col-span-4 md:col-span-2">
-          <input
-            type="number" step="1" min="0"
-            className="w-full text-xs px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Lead (d)"
-            value={line.lead_time_days}
-            onChange={(e) => onChange({ lead_time_days: Number(e.target.value) })}
-          />
-        </div>
-        <div className="col-span-6 md:col-span-2">
-          <label className="flex items-center gap-1.5 text-xs text-ink-700 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={line.is_commissioned}
-              onChange={(e) => onChange({ is_commissioned: e.target.checked, commission_cap_pct: e.target.checked ? (line.commission_cap_pct ?? 0.05) : null })}
-            />
-            commissioned
-          </label>
-        </div>
-        <div className="col-span-6 md:col-span-3">
-          {line.is_commissioned && (
-            <input
-              type="number" step="0.01" min="0.01" max="0.99"
-              className="w-full font-mono text-xs px-2 py-1.5 rounded border border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500"
-              placeholder="cap (0.00 – 0.99)"
-              value={line.commission_cap_pct ?? ''}
-              onChange={(e) => onChange({ commission_cap_pct: Number(e.target.value) })}
-            />
-          )}
-        </div>
-      </div>
-    </div>
+        ) : (
+          <span className="text-ink-300 text-xs">—</span>
+        )}
+      </td>
+      <td className="px-2 py-1 text-center">
+        <input
+          type="checkbox"
+          checked={line.is_commissioned}
+          onChange={onToggleCommissioned}
+          title={line.is_commissioned ? 'Uncheck to move back to standard line items.' : 'Check to move to commissioned line items.'}
+        />
+      </td>
+      <td className="px-1 py-1 text-center">
+        <button onClick={onRemove} className="text-rose-600 hover:text-rose-800 text-base leading-none" title="Remove line">×</button>
+      </td>
+    </tr>
   );
 }
 
