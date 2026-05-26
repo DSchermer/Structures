@@ -487,6 +487,7 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
     return () => { cancelled = true; };
   }, [line.component_part_number]);
 
+  const [focused, setFocused] = useState(false);
   const matches = useMemo(() => {
     const q = (line.component_part_number ?? '').toLowerCase();
     if (!q) return [];
@@ -503,15 +504,18 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
           className="w-full font-mono text-xs px-1.5 py-1 rounded border border-transparent hover:border-ink-200 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-transparent"
           placeholder="Part number"
           value={line.component_part_number}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 120)}
           onChange={(e) => onChange({ component_part_number: e.target.value, chosen_price_point_id: null, unit_price: null })}
         />
-        {matches.length > 0 && (
+        {focused && matches.length > 0 && (
           <div className="absolute z-20 left-2 right-2 mt-0.5 bg-white border border-ink-200 rounded-md shadow-md max-h-48 overflow-y-auto">
             {matches.map((m) => (
               <button
                 key={m}
                 type="button"
-                onClick={() => onChange({ component_part_number: m, chosen_price_point_id: null, unit_price: null })}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { onChange({ component_part_number: m, chosen_price_point_id: null, unit_price: null }); setFocused(false); }}
                 className="block w-full text-left px-2 py-1 font-mono text-xs hover:bg-indigo-50"
               >{m}</button>
             ))}
