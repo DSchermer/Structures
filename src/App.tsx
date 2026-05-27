@@ -17,6 +17,20 @@ function saveCurrentUserId(id: string) {
   try { localStorage.setItem(CURRENT_USER_KEY, id); } catch {}
 }
 
+// ---------------- theme ----------------
+type Theme = 'light' | 'dark' | 'corporate';
+const THEME_KEY = 'sv2-theme';
+function loadTheme(): Theme {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    if (v === 'dark' || v === 'corporate' || v === 'light') return v;
+  } catch {}
+  return 'light';
+}
+function saveTheme(t: Theme) {
+  try { localStorage.setItem(THEME_KEY, t); } catch {}
+}
+
 // ---------------- micro-router (single client-rendered pathname) ----------------
 function usePathname(): string {
   const [path, setPath] = useState(window.location.pathname);
@@ -34,6 +48,13 @@ export default function App() {
   const [tags, setTags] = useState<TagsResp | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(loadCurrentUserId());
+  const [theme, setTheme] = useState<Theme>(loadTheme());
+
+  // Apply theme to <html data-theme=...> on every change
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    saveTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     fetch('/api/tags').then((r) => r.json() as Promise<TagsResp>).then(setTags).catch(() => {});
@@ -81,11 +102,13 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-full flex flex-col bg-ink-50">
+    <div className="min-h-full flex flex-col bg-ink-50 transition-colors">
       <Header
         users={users}
         currentUser={currentUser}
         onPick={(u) => { setCurrentUserId(u.id); saveCurrentUserId(u.id); }}
+        theme={theme}
+        setTheme={setTheme}
       />
       <main className="flex-1">{body}</main>
       <footer className="border-t border-ink-200 bg-white">
@@ -97,7 +120,10 @@ export default function App() {
   );
 }
 
-function Header({ users, currentUser, onPick }: { users: User[]; currentUser: User | null; onPick: (u: User) => void }) {
+function Header({ users, currentUser, onPick, theme, setTheme }: {
+  users: User[]; currentUser: User | null; onPick: (u: User) => void;
+  theme: Theme; setTheme: (t: Theme) => void;
+}) {
   return (
     <header className="border-b border-ink-200 bg-white">
       <div className="mx-auto max-w-7xl px-6 py-3 flex items-center gap-4">
@@ -115,11 +141,37 @@ function Header({ users, currentUser, onPick }: { users: User[]; currentUser: Us
         >
           Inbox
         </a>
-        <span className="ml-auto">
+        <span className="ml-auto flex items-center gap-3">
+          <ThemeSwitcher theme={theme} setTheme={setTheme} />
           <UserSwitcher users={users} current={currentUser} onPick={onPick} />
         </span>
       </div>
     </header>
+  );
+}
+
+function ThemeSwitcher({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+  const opts: { value: Theme; label: string }[] = [
+    { value: 'light',     label: 'Light' },
+    { value: 'dark',      label: 'Dark' },
+    { value: 'corporate', label: 'Corp' },
+  ];
+  return (
+    <div className="inline-flex rounded-md border border-ink-200 bg-white overflow-hidden text-xs">
+      {opts.map((o, i) => (
+        <button
+          key={o.value}
+          onClick={() => setTheme(o.value)}
+          className={
+            (i > 0 ? 'border-l border-ink-200 ' : '') +
+            'px-2 py-1 ' +
+            (theme === o.value ? 'bg-indigo-600 text-white font-medium' : 'text-ink-600 hover:bg-ink-100')
+          }
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
