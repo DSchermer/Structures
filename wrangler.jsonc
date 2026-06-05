@@ -9,7 +9,7 @@
   // - The D1 binding is declared here so Workers Builds preserves it
   //   on every deploy (dashboard-set bindings get wiped otherwise).
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "structures",
+  "name": "a",
   "compatibility_date": "2026-05-25",
   "main": "src/worker/index.ts",
   "assets": {
