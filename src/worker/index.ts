@@ -1087,6 +1087,14 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     const dup = await env.DB.prepare(`SELECT id FROM STRUCTURE WHERE spec_id = ? AND part_number = ? AND id <> ?`).bind(draft.spec_id, partNumber, structureId).first();
     if (dup) return json({ error: `G6: part_number ${partNumber} already exists under this spec` }, 422);
 
+    // G6b: archive interlock. Check-out already refuses archived structures;
+    // this is the last-line guard against an archive landing mid-draft.
+    const archivedQ = await env.DB.prepare(`
+      SELECT 1 FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+      WHERE st.structure_id = ? AND t.kind = 'system' AND t.name_lower = 'archived'
+    `).bind(structureId).first();
+    if (archivedQ) return json({ error: 'G6b: structure is archived; unarchive first' }, 422);
+
     // Detect changed streams (CR vs PR)
     const crChanged = isCrChanged(live, draft, liveLines.results ?? [], draftLines.results ?? [], liveTagsQ.results ?? [], draftTagsQ.results ?? []);
     const prChanged = isPrChanged(live, draft, liveLines.results ?? [], draftLines.results ?? []);
@@ -1103,6 +1111,15 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
         if (!li.supplier)              return json({ error: `G4cr: line ${li.sort_order} missing supplier` }, 422);
         if (li.lead_time_days === null || li.lead_time_days === undefined) return json({ error: `G4cr: line ${li.sort_order} missing lead_time_days` }, 422);
         if (!li.product_code)          return json({ error: `G4cr: line ${li.sort_order} missing product_code` }, 422);
+        // A sub-assembly line must point at a STRUCTURE that actually carries
+        // the `subassembly` system tag — otherwise its cost was never published.
+        if (li.sub_assembly_structure_id) {
+          const taggedQ = await env.DB.prepare(`
+            SELECT 1 FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+            WHERE st.structure_id = ? AND t.kind = 'system' AND t.name_lower = 'subassembly'
+          `).bind(li.sub_assembly_structure_id).first();
+          if (!taggedQ) return json({ error: `G4cr: line ${li.sort_order} references a structure that is not marked as a sub-assembly` }, 422);
+        }
       }
     }
 
@@ -1121,11 +1138,57 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
       }
     }
 
-    // Variant rules: variants must carry at least 1 variant tag
+    // G4c (shared): sub-assembly self-reference or cycle. Depth is unbounded by
+    // design — only loops are rejected. Re-checked even on PR-only commits.
+    const cycle = await detectSubAssemblyCycle(env, structureId, draftLines.results ?? []);
+    if (cycle) return json({ error: `G4c: sub-assembly cycle detected — ${cycle}` }, 422);
+
+    // G4d (shared): the same component may not appear on two lines. One line per
+    // part; quantity carries the count. Comparison is exact-text, matching G6.
+    const seenComponents = new Set<string>();
+    for (const li of draftLines.results ?? []) {
+      const key = li.component_part_number;
+      if (!key) continue; // absence is G4cr's problem, not G4d's
+      if (seenComponents.has(key)) {
+        return json({ error: `G4d: duplicate line item — component ${key} appears more than once. Use a single line and raise the quantity.` }, 422);
+      }
+      seenComponents.add(key);
+    }
+
+    // Variant gates (CR-side; the CR carries variant tags forward on PR-only commits)
     const draftTags = draftTagsQ.results ?? [];
     if (draft.parent_structure_id) {
-      const variantTagCount = draftTags.filter((t) => t.kind === 'variant').length;
-      if (variantTagCount === 0) return json({ error: 'Variant requires at least one variant tag' }, 422);
+      // G5a: variant depth = 1 — the parent must itself be a base part.
+      const parentQ = await env.DB.prepare(`SELECT parent_structure_id FROM STRUCTURE WHERE id = ?`).bind(draft.parent_structure_id).first<{ parent_structure_id: string | null }>();
+      if (!parentQ) return json({ error: 'G5a: parent structure does not exist' }, 422);
+      if (parentQ.parent_structure_id) return json({ error: 'G5a: variant depth = 1 — cannot commit a variant of a variant' }, 422);
+
+      // G5b: at least one variant tag, on every CR check-in including the first.
+      const variantTagIds = new Set(draftTags.filter((t) => t.kind === 'variant').map((t) => t.tag_id));
+      if (variantTagIds.size === 0) return json({ error: 'G5b: variant requires at least one variant tag' }, 422);
+
+      // G5c: sibling distinctness — the variant-tag set must not exactly match
+      // that of any ACTIVE (non-archived) sibling under the same base part.
+      const sibsQ = await env.DB.prepare(`
+        SELECT s.id, (sp.spec_number || s.part_number) AS name
+        FROM STRUCTURE s
+        JOIN SPEC sp ON sp.id = s.spec_id
+        WHERE s.parent_structure_id = ? AND s.id <> ?
+          AND NOT EXISTS (
+            SELECT 1 FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+            WHERE st.structure_id = s.id AND t.kind = 'system' AND t.name_lower = 'archived'
+          )
+      `).bind(draft.parent_structure_id, structureId).all<{ id: string; name: string }>();
+      for (const sib of sibsQ.results ?? []) {
+        const sibTagsQ = await env.DB.prepare(`
+          SELECT st.tag_id FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+          WHERE st.structure_id = ? AND t.kind = 'variant'
+        `).bind(sib.id).all<{ tag_id: string }>();
+        const sibIds = (sibTagsQ.results ?? []).map((r) => r.tag_id);
+        if (sibIds.length === variantTagIds.size && sibIds.every((id) => variantTagIds.has(id))) {
+          return json({ error: `G5c: variant-tag set is identical to sibling ${sib.name}. Add or remove at least one variant tag to differentiate.` }, 422);
+        }
+      }
     }
 
     // Run back-solve
@@ -1501,6 +1564,41 @@ async function handleAcknowledge(env: Env, id: string, request: Request): Promis
 // =============================================================
 // helpers
 // =============================================================
+
+// G4c — walk the sub-assembly graph outward from the draft's own BOM and report
+// the first loop back to `structureId`. Depth is unbounded (§5.7: "rejects cycles
+// only — there is no depth cap"); the `seen` set is what keeps traversal finite,
+// including across any pre-existing cycle elsewhere in the catalog.
+// Returns a human-readable reason, or null when the graph is acyclic.
+async function detectSubAssemblyCycle(env: Env, structureId: string, draftLines: any[]): Promise<string | null> {
+  for (const li of draftLines) {
+    if (li.sub_assembly_structure_id === structureId) {
+      return `line ${li.sort_order} (${li.component_part_number}) references this structure as its own sub-assembly`;
+    }
+  }
+
+  const seen = new Set<string>([structureId]);
+  const queue: string[] = draftLines
+    .map((li) => li.sub_assembly_structure_id)
+    .filter((id: string | null): id is string => !!id);
+
+  while (queue.length) {
+    const id = queue.shift() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const kids = await env.DB.prepare(`
+      SELECT sub_assembly_structure_id AS id FROM LINE_ITEM
+      WHERE structure_id = ? AND sub_assembly_structure_id IS NOT NULL
+    `).bind(id).all<{ id: string }>();
+
+    for (const k of kids.results ?? []) {
+      if (k.id === structureId) return `the sub-assembly graph loops back to this structure via ${id}`;
+      queue.push(k.id);
+    }
+  }
+  return null;
+}
 
 function isCrChanged(live: any, draft: any, liveLines: any[], draftLines: any[], liveTags: any[], draftTags: any[]): boolean {
   // CR-side: BOM shape + per-line construction fields + structure construction fields + general/variant tags + instructions + spec_revision_id
