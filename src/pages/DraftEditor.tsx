@@ -43,7 +43,22 @@ type Draft = {
   lines: DraftLine[];
   tags: DraftTag[];
   spec_tags: string[];
+  // Variant-tag sets of every ACTIVE sibling under the same base part. Used to
+  // detect the sibling-spawn tie live as the engineer edits tags (§5.4); G5c
+  // is the authoritative gate at check-in.
+  sibling_variant_tag_sets: Array<{ name: string; tag_ids: string[] }>;
 };
+
+// A tie is exact set equality on variant tags against any active sibling —
+// the same rule G5c applies server-side.
+function findSiblingTagTie(draft: Draft): string | null {
+  const mine = new Set(draft.tags.filter((t) => t.kind === 'variant').map((t) => t.id));
+  if (mine.size === 0) return null;
+  for (const sib of draft.sibling_variant_tag_sets ?? []) {
+    if (sib.tag_ids.length === mine.size && sib.tag_ids.every((id) => mine.has(id))) return sib.name;
+  }
+  return null;
+}
 
 type PpRow = { id: string; price: number; quote_number: string | null; set_at: string; set_by: string; tags: string[]; is_superseded: boolean };
 
@@ -188,6 +203,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
   }
 
   const topLevel = draft.spec_number + (draft.part_number || '');
+  const siblingTie = findSiblingTagTie(draft);
   const bs = backsolve(
     draft.lines.map((l) => ({ unit_price: l.unit_price ?? l.price_override ?? 0, quantity: l.quantity, is_commissioned: l.is_commissioned, commission_cap_pct: l.commission_cap_pct } as LineForBacksolve)),
     draft.target_assembly_margin_pct ?? 0,
@@ -210,6 +226,16 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
             Will commit as Rev {draft.live_current_construction_revision_number + 1}
           </span>
         </div>
+
+        {/* Sibling-spawn tie — persistent and non-dismissible; clears the
+            instant the engineer breaks the tie. */}
+        {siblingTie && (
+          <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <strong>Variant tags tie {siblingTie}.</strong>{' '}
+            This variant currently shares its entire variant-tag set with that sibling. Add or remove at
+            least one variant tag before check-in — G5c will reject the commit otherwise.
+          </div>
+        )}
 
         {/* Live back-solve readout */}
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">

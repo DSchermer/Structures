@@ -96,7 +96,7 @@ export default function App() {
   } else if (path === '/prices') {
     body = <PricesPage currentUser={currentUser} />;
   } else if (path === '/') {
-    body = <SearchPage rows={rows} tags={tags} />;
+    body = <SearchPage rows={rows} tags={tags} currentUser={currentUser} />;
   } else {
     body = <NotFound path={path} />;
   }

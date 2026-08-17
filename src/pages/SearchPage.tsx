@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
-import type { Row, TagsResp } from '../types';
+import type { Row, TagsResp, User } from '../types';
 import { Chip, StatusBadge, tagStyle, usd, relativeTime } from '../components/shared';
+import { NewStructureDialog } from '../components/NewStructureDialog';
 
 type ArchivedFilter = 'hide' | 'show' | 'only';
 type SubFilter      = 'show' | 'hide' | 'only';
 
-export default function SearchPage({ rows, tags }: { rows: Row[] | 'loading' | 'error'; tags: TagsResp | null }) {
+export default function SearchPage({ rows, tags, currentUser }: { rows: Row[] | 'loading' | 'error'; tags: TagsResp | null; currentUser: User | null }) {
   const [q, setQ] = useState('');
+  const [showNew, setShowNew] = useState(false);
   const [selectedSpecTags,    setSelectedSpecTags]    = useState<Set<string>>(new Set());
   const [selectedGeneralTags, setSelectedGeneralTags] = useState<Set<string>>(new Set());
   const [selectedVariantTags, setSelectedVariantTags] = useState<Set<string>>(new Set());
@@ -33,15 +35,30 @@ export default function SearchPage({ rows, tags }: { rows: Row[] | 'loading' | '
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-6">
-      <div className="rounded-lg bg-white border border-ink-200 shadow-sm p-4">
-        <input
-          autoFocus
-          type="search"
-          placeholder="Search specs, parts, tags…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="w-full text-base px-3 py-2 rounded-md border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      {showNew && currentUser && (
+        <NewStructureDialog
+          rows={rows === 'loading' || rows === 'error' ? [] : rows}
+          currentUser={currentUser}
+          onClose={() => setShowNew(false)}
         />
+      )}
+      <div className="rounded-lg bg-white border border-ink-200 shadow-sm p-4">
+        <div className="flex items-center gap-3">
+          <input
+            autoFocus
+            type="search"
+            placeholder="Search specs, parts, tags…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="flex-1 text-base px-3 py-2 rounded-md border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          {currentUser?.role === 'engineer' && (
+            <button
+              onClick={() => setShowNew(true)}
+              className="shrink-0 rounded-md bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700"
+            >+ New</button>
+          )}
+        </div>
         <div className="mt-2 text-xs text-ink-500 flex items-baseline gap-3">
           <span>
             {rows === 'loading' ? 'Loading…' :

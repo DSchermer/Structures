@@ -48,6 +48,10 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
     return handleTogglePpSuperseded(env, pm[1], request);
   }
 
+  if (url.pathname === '/api/specs') {
+    if (request.method === 'POST') return handleCreateSpec(env, request);
+    return handleSpecs(env);
+  }
   if (url.pathname === '/api/structures' && request.method === 'POST') {
     return handleCreateStructure(env, request);
   }
@@ -655,7 +659,98 @@ interface CreateStructureBody {
   parent_structure_id?: string; // non-null = variant
   part_number: string;         // engineer-entered (e.g. 'P002' or 'P001-ARC')
   base_from_structure_id?: string; // clone BOM + general tags from this structure
+  // Preferred variant entry point: the structure the engineer picked as the
+  // source. May be a base part OR another variant (sibling-spawn) — the server
+  // resolves parent_structure_id to a BASE part either way.
+  variant_source_structure_id?: string;
   current_user_id: string;     // who's holding the lock
+}
+
+// GET /api/specs — the spec picker on the "new part under an existing spec" and
+// "new variant" paths. Counts only committed structures; CR-0 drafts are private.
+async function handleSpecs(env: Env): Promise<Response> {
+  try {
+    const q = await env.DB.prepare(`
+      SELECT sp.id, sp.spec_number, sp.customer_revision,
+             (SELECT COUNT(*) FROM STRUCTURE s
+               WHERE s.spec_id = sp.id AND s.current_construction_revision_number > 0) AS structure_count
+      FROM SPEC sp
+      ORDER BY sp.spec_number
+    `).all<{ id: string; spec_number: string; customer_revision: string; structure_count: number }>();
+    return json({ specs: q.results ?? [] });
+  } catch (err) {
+    return json({ error: msg(err) }, 500);
+  }
+}
+
+interface CreateSpecBody {
+  spec_number: string;
+  customer_revision: string;
+  part_number: string;
+  current_user_id: string;
+}
+
+// POST /api/specs — the New Spec creation flow (§5.4). The only path that
+// introduces a SPEC row. Atomic: SPEC + initial SPEC_REVISION + placeholder
+// STRUCTURE (CR 0 / PR 0) + DRAFT_STRUCTURE + CHECKOUT_LOCK, or nothing.
+async function handleCreateSpec(env: Env, request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as CreateSpecBody;
+    const specNumber = (body.spec_number ?? '').trim();
+    const custRev    = (body.customer_revision ?? '').trim();
+    const partNumber = (body.part_number ?? '').trim();
+
+    if (!body.current_user_id) return json({ error: 'current_user_id required' }, 400);
+    if (!specNumber)           return json({ error: 'spec_number required' }, 400);
+    if (!custRev)              return json({ error: 'customer_revision required' }, 400);
+    if (partNumber.length < 1 || partNumber.length > 25) {
+      return json({ error: 'part_number must be 1-25 characters' }, 400);
+    }
+
+    const dup = await env.DB.prepare(`SELECT id FROM SPEC WHERE spec_number = ?`).bind(specNumber).first<{ id: string }>();
+    if (dup) {
+      return json({
+        error: `Spec ${specNumber} already exists. Use "New part under an existing spec" instead.`,
+        existing_spec_id: dup.id,
+      }, 409);
+    }
+
+    const specId = uuid();
+    const srId = uuid();
+    const structId = uuid();
+    const now = isoNow();
+
+    await env.DB.batch([
+      env.DB.prepare(`
+        INSERT INTO SPEC (id, spec_number, customer_revision, created_by_user_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(specId, specNumber, custRev, body.current_user_id, now),
+      env.DB.prepare(`
+        INSERT INTO SPEC_REVISION (id, spec_id, customer_revision, author_user_id, recorded_at, notes, change_set)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(srId, specId, custRev, body.current_user_id, now, 'Initial spec revision',
+              JSON.stringify({ spec_created: true, customer_revision: { old: null, new: custRev } })),
+      env.DB.prepare(`
+        INSERT INTO STRUCTURE
+          (id, part_number, spec_id, spec_revision_id, parent_structure_id,
+           current_construction_revision_number, current_price_revision_number,
+           created_by_user_id, created_at)
+        VALUES (?, ?, ?, ?, NULL, 0, 0, ?, ?)
+      `).bind(structId, partNumber, specId, srId, body.current_user_id, now),
+      env.DB.prepare(`
+        INSERT INTO DRAFT_STRUCTURE
+          (structure_id, editor_user_id, part_number, spec_id, spec_revision_id,
+           parent_structure_id, draft_started_at, last_edited_at)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+      `).bind(structId, body.current_user_id, partNumber, specId, srId, now, now),
+      env.DB.prepare(`INSERT INTO CHECKOUT_LOCK (structure_id, holder_user_id, acquired_at) VALUES (?, ?, ?)`)
+        .bind(structId, body.current_user_id, now),
+    ]);
+
+    return json({ id: structId, spec_id: specId });
+  } catch (err) {
+    return json({ error: msg(err) }, 500);
+  }
 }
 
 async function handleCreateStructure(env: Env, request: Request): Promise<Response> {
@@ -692,13 +787,35 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
     const sr = await env.DB.prepare(`SELECT id FROM SPEC_REVISION WHERE spec_id = ? ORDER BY recorded_at DESC LIMIT 1`).bind(body.spec_id).first<{ id: string }>();
     if (!sr) return json({ error: 'Spec has no SPEC_REVISION rows' }, 500);
 
-    // Variant-of validation: parent must exist + be a base part
+    // Variant source resolution (§5.4). The engineer may pick a base part or
+    // another variant as the source. Sibling-spawn resolves the new structure's
+    // parent to the SOURCE'S BASE — never the source itself — so variant depth
+    // stays capped at 1 by construction, while the clone still comes from the
+    // source the engineer actually chose.
+    let parentId    = body.parent_structure_id ?? null;
     let cloneFromId = body.base_from_structure_id ?? null;
-    if (body.parent_structure_id) {
-      const p = await env.DB.prepare(`SELECT id, parent_structure_id FROM STRUCTURE WHERE id = ?`).bind(body.parent_structure_id).first<{ id: string; parent_structure_id: string | null }>();
+    if (body.variant_source_structure_id) {
+      const src = await env.DB.prepare(`
+        SELECT id, parent_structure_id, current_construction_revision_number AS cr
+        FROM STRUCTURE WHERE id = ?
+      `).bind(body.variant_source_structure_id).first<{ id: string; parent_structure_id: string | null; cr: number }>();
+      if (!src) return json({ error: 'variant_source_structure_id does not exist' }, 400);
+      // The source must be committed. Cloning reads the LIVE tables, so a CR-0
+      // source (whose content still lives in DRAFT_*) would silently produce an
+      // empty BOM rather than a copy.
+      if (src.cr < 1) {
+        return json({ error: 'Variant source must be checked in at least once — you cannot spawn a variant from an uncommitted draft.' }, 409);
+      }
+      parentId    = src.parent_structure_id ?? src.id;
+      cloneFromId = src.id;
+    }
+
+    // Variant-of validation: parent must exist + be a base part
+    if (parentId) {
+      const p = await env.DB.prepare(`SELECT id, parent_structure_id FROM STRUCTURE WHERE id = ?`).bind(parentId).first<{ id: string; parent_structure_id: string | null }>();
       if (!p) return json({ error: 'parent_structure_id does not exist' }, 400);
       if (p.parent_structure_id) return json({ error: 'Cannot create a variant of a variant (depth = 1)' }, 400);
-      if (!cloneFromId) cloneFromId = body.parent_structure_id;
+      if (!cloneFromId) cloneFromId = parentId;
     }
 
     // Pull source structure (if cloning)
@@ -722,7 +839,7 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
          created_by_user_id, created_at)
       VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      newId, partNumber, body.spec_id, sr.id, body.parent_structure_id ?? null,
+      newId, partNumber, body.spec_id, sr.id, parentId,
       source?.build_hours ?? null,
       source?.target_assembly_margin_pct ?? null,
       source?.build_instr_1 ?? null, source?.build_instr_2 ?? null, source?.build_instr_3 ?? null, source?.build_instr_4 ?? null, source?.build_instr_5 ?? null,
@@ -740,7 +857,7 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
          draft_started_at, last_edited_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      newId, body.current_user_id, partNumber, body.spec_id, sr.id, body.parent_structure_id ?? null,
+      newId, body.current_user_id, partNumber, body.spec_id, sr.id, parentId,
       source?.build_hours ?? null, source?.target_assembly_margin_pct ?? null,
       source?.build_instr_1 ?? null, source?.build_instr_2 ?? null, source?.build_instr_3 ?? null, source?.build_instr_4 ?? null, source?.build_instr_5 ?? null,
       source?.work_instr_1 ?? null, source?.work_instr_2 ?? null, source?.work_instr_3 ?? null, source?.work_instr_4 ?? null, source?.work_instr_5 ?? null,
@@ -765,13 +882,19 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
           li.is_commissioned, li.commission_cap_pct, li.sub_assembly_structure_id
         ));
       }
-      // Clone general/variant tags
+      // Clone general/variant tags. Audit fields carry over VERBATIM from the
+      // source (§5.4): a cloned "arctic" tag keeps whoever first applied it and
+      // when, so "first time this concept was tagged in this family" survives
+      // down the variant tree. The clone action itself is recorded on the new
+      // STRUCTURE's created_by_user_id / created_at, not here.
       const tags = await env.DB.prepare(`
-        SELECT st.tag_id FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+        SELECT st.tag_id, st.applied_by_user_id, st.applied_at, st.reason
+        FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
         WHERE st.structure_id = ? AND t.kind IN ('general', 'variant')
-      `).bind(cloneFromId).all<{ tag_id: string }>();
+      `).bind(cloneFromId).all<{ tag_id: string; applied_by_user_id: string; applied_at: string; reason: string | null }>();
       for (const t of tags.results ?? []) {
-        stmts.push(env.DB.prepare(`INSERT INTO DRAFT_STRUCTURE_TAG (structure_id, tag_id, applied_by_user_id, applied_at) VALUES (?, ?, ?, ?)`).bind(newId, t.tag_id, body.current_user_id, now));
+        stmts.push(env.DB.prepare(`INSERT INTO DRAFT_STRUCTURE_TAG (structure_id, tag_id, applied_by_user_id, applied_at, reason) VALUES (?, ?, ?, ?, ?)`)
+          .bind(newId, t.tag_id, t.applied_by_user_id, t.applied_at, t.reason));
       }
     }
 
@@ -888,6 +1011,31 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
 
     const editor = await env.DB.prepare(`SELECT display_name FROM USER WHERE id = ?`).bind(draft.editor_user_id).first<{ display_name: string }>();
 
+    // Active siblings' variant-tag sets, for the sibling-spawn banner (§5.4).
+    // Returned as raw sets rather than a precomputed verdict so the editor can
+    // re-evaluate the tie live as the engineer adds or removes tags — the
+    // banner has to clear the moment the tie breaks, not on the next reload.
+    // G5c at check-in remains the authoritative gate.
+    const siblingVariantTagSets: Array<{ name: string; tag_ids: string[] }> = [];
+    if (draft.parent_structure_id) {
+      const sibsQ = await env.DB.prepare(`
+        SELECT s.id, (sp.spec_number || s.part_number) AS name
+        FROM STRUCTURE s JOIN SPEC sp ON sp.id = s.spec_id
+        WHERE s.parent_structure_id = ? AND s.id <> ?
+          AND NOT EXISTS (
+            SELECT 1 FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+            WHERE st.structure_id = s.id AND t.kind = 'system' AND t.name_lower = 'archived'
+          )
+      `).bind(draft.parent_structure_id, structureId).all<{ id: string; name: string }>();
+      for (const sib of sibsQ.results ?? []) {
+        const stq = await env.DB.prepare(`
+          SELECT st.tag_id FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+          WHERE st.structure_id = ? AND t.kind = 'variant'
+        `).bind(sib.id).all<{ tag_id: string }>();
+        siblingVariantTagSets.push({ name: sib.name, tag_ids: (stq.results ?? []).map((r) => r.tag_id) });
+      }
+    }
+
     return json({
       structure_id: structureId,
       editor_user_id: draft.editor_user_id,
@@ -924,6 +1072,7 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
       })),
       tags: draftTags.results ?? [],
       spec_tags: (specTagsQ.results ?? []).map((t) => t.name),
+      sibling_variant_tag_sets: siblingVariantTagSets,
     });
   } catch (err) {
     return json({ error: msg(err) }, 500);
