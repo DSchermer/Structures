@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Chip, StatusBadge, tagStyle, usd, pct } from '../components/shared';
+import { StatusBadge, tagStyle, usd, pct } from '../components/shared';
 import { Dialog } from '../components/Dialog';
 import { backsolve, type LineForBacksolve } from '../lib/backsolve';
 import { fromE4, toE4 } from '../lib/money';
-import type { User, TagsResp } from '../types';
+import type { Tag, User, TagsResp } from '../types';
 
 type DraftLine = {
   id: string;
@@ -72,7 +72,6 @@ type PpRow = { id: string; price: number; quote_number: string | null; set_at: s
 
 export default function DraftEditor({ id, currentUser, tags }: { id: string; currentUser: User | null; tags: TagsResp | null }) {
   const [draft, setDraft] = useState<Draft | 'loading' | 'error' | 'notfound'>('loading');
-  const [components, setComponents] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<CatalogRow[]>([]);
   const [ppCache, setPpCache] = useState<Map<string, PpRow[]>>(new Map());
   const [saving, setSaving] = useState(false);
@@ -88,9 +87,10 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
         setDraft(await r.json() as Draft);
       } catch { setDraft('error'); }
     })();
-    fetch('/api/components').then((r) => r.json()).then((d: { components: string[]; catalog?: CatalogRow[] }) => {
-      setComponents(d.components); setCatalog(d.catalog ?? []);
-    }).catch(() => {});
+    fetch('/api/components')
+      .then((r) => r.json())
+      .then((d: { components: CatalogRow[] }) => setCatalog(d.components ?? []))
+      .catch(() => {});
     fetch('/api/users').then((r) => r.json()).then((d: { users: User[] }) => setUsers(d.users)).catch(() => {});
   }, [id]);
 
@@ -346,7 +346,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
                     label="Standard line items"
                     lines={standard}
                     isCommissionedTable={false}
-                    components={components} catalog={catalog}
+                    catalog={catalog}
                     loadPps={loadPps}
                     onUpdate={updateLine}
                     onRemove={removeLine}
@@ -358,7 +358,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
                     sublabel="Each commissioned line earns at most its cap; the back-solve loads the remaining margin onto the standard lines."
                     lines={commissioned}
                     isCommissionedTable
-                    components={components} catalog={catalog}
+                    catalog={catalog}
                     loadPps={loadPps}
                     onUpdate={updateLine}
                     onRemove={removeLine}
@@ -515,12 +515,11 @@ function Section({ title, children, action, hint }: { title: string; children: R
 
 // ---------- BOM sub-tables ----------
 
-function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, catalog, loadPps, onUpdate, onRemove, onToggleCommissioned, onAdd }: {
+function BomSubTable({ label, sublabel, lines, isCommissionedTable, catalog, loadPps, onUpdate, onRemove, onToggleCommissioned, onAdd }: {
   label: string;
   sublabel?: string;
   lines: DraftLine[];
   isCommissionedTable: boolean;
-  components: string[];
   catalog: CatalogRow[];
   loadPps: (c: string) => Promise<PpRow[]>;
   onUpdate: (id: string, patch: Partial<DraftLine>) => void;
@@ -562,8 +561,7 @@ function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, 
               <BomTableRow
                 key={line.id}
                 line={line}
-                isCommissionedTable={isCommissionedTable}
-                components={components} catalog={catalog}
+                catalog={catalog}
                 loadPps={loadPps}
                 onChange={(patch) => onUpdate(line.id, patch)}
                 onRemove={() => onRemove(line.id)}
@@ -577,10 +575,8 @@ function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, 
   );
 }
 
-function BomTableRow({ line, isCommissionedTable, components, catalog, loadPps, onChange, onRemove, onToggleCommissioned }: {
+function BomTableRow({ line, catalog, loadPps, onChange, onRemove, onToggleCommissioned }: {
   line: DraftLine;
-  isCommissionedTable: boolean;
-  components: string[];
   catalog: CatalogRow[];
   loadPps: (c: string) => Promise<PpRow[]>;
   onChange: (patch: Partial<DraftLine>) => void;
@@ -610,8 +606,11 @@ function BomTableRow({ line, isCommissionedTable, components, catalog, loadPps, 
   const matches = useMemo(() => {
     const q = (line.component_part_number ?? '').toLowerCase();
     if (!q) return [];
-    return components.filter((c) => c.toLowerCase().startsWith(q) && c !== line.component_part_number).slice(0, 6);
-  }, [components, line.component_part_number]);
+    return catalog
+      .filter((c) => c.name.toLowerCase().startsWith(q) && c.name !== line.component_part_number)
+      .slice(0, 6)
+      .map((c) => c.name);
+  }, [catalog, line.component_part_number]);
 
   const ext = (line.unit_price ?? 0) * (line.quantity ?? 0);
 
@@ -802,7 +801,7 @@ function TagsPanel({ draft, tags, onToggleVariant, onToggleGeneral }: {
 }) {
   const [tagIds, setTagIds] = useState<Map<string, string>>(new Map());
   useEffect(() => {
-    fetch('/api/tag-ids').then((r) => r.json()).then((d: { tags: Array<{ id: string; name: string; kind: string }> }) => {
+    fetch('/api/tag-ids').then((r) => r.json()).then((d: { tags: Tag[] }) => {
       const map = new Map<string, string>();
       for (const t of d.tags) map.set(`${t.kind}:${t.name}`, t.id);
       setTagIds(map);

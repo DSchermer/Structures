@@ -5,7 +5,12 @@ import DraftEditor from './pages/DraftEditor';
 import InboxPage from './pages/Inbox';
 import AssignmentView from './pages/AssignmentView';
 import PricesPage from './pages/PricesPage';
-import type { Row, SearchResp, TagsResp, User, UsersResp } from './types';
+import type { Row, SearchResp, Tag, TagsResp, User, UsersResp } from './types';
+
+function groupTagsByKind(tags: Tag[]): TagsResp {
+  const pick = (kind: string) => tags.filter((t) => t.kind === kind).map((t) => t.name);
+  return { spec: pick('spec'), general: pick('general'), variant: pick('variant') };
+}
 
 // ---------------- current user (localStorage) ----------------
 const CURRENT_USER_KEY = 'sv2-current-user-id';
@@ -57,7 +62,12 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    fetch('/api/tags').then((r) => r.json() as Promise<TagsResp>).then(setTags).catch(() => {});
+    // One tag fetch serves both shapes: the filter facets need names by kind,
+    // the draft editor needs ids. /api/tag-ids carries both.
+    fetch('/api/tag-ids')
+      .then((r) => r.json() as Promise<{ tags: Tag[] }>)
+      .then((d) => setTags(groupTagsByKind(d.tags)))
+      .catch(() => {});
     fetch('/api/users').then((r) => r.json() as Promise<UsersResp>).then((d) => {
       setUsers(d.users);
       if (!currentUserId && d.users.length) {

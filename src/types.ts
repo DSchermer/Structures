@@ -27,6 +27,7 @@ export type Row = {
   is_uncommitted_draft: boolean;
 };
 export type SearchResp = { rows: Row[] };
+export type Tag = { id: string; name: string; kind: string };
 export type TagsResp = { spec: string[]; general: string[]; variant: string[] };
 
 export type User = {

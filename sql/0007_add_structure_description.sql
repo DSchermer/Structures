@@ -1,15 +1,11 @@
--- STRUCTURE.description — a short, one-line title for the assembly.
+-- STRUCTURE.description — a short one-line title for the assembly.
 --
--- Construction-side field: it sits alongside part_number and build_hours, so
--- editing it advances the customer-facing CR and shows in the OM "what changed"
--- diff. Required at every check-in (gate G2), which is why this migration
--- backfills every structure that already exists — without the backfill the
--- entire committed catalog would be un-checkin-able until hand-edited.
+-- CR-side: edits advance the customer-facing Rev N. Required at every check-in
+-- (G2), which is why every existing structure is backfilled below — without it
+-- the whole committed catalog would be un-checkin-able. Backfill text is
+-- derived from each structure's own BOM.
 --
--- Backfill text is derived from each structure's actual BOM (body material,
--- size, pressure class, trim) plus its variant tags. Run BEFORE deploying the
--- code that depends on this column:
---   npx wrangler d1 execute structures --remote --file=sql/0007_add_structure_description.sql
+-- Run before deploying the code that reads this column.
 
 ALTER TABLE STRUCTURE       ADD COLUMN description TEXT;
 ALTER TABLE DRAFT_STRUCTURE ADD COLUMN description TEXT;

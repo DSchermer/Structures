@@ -1,58 +1,61 @@
-# StructureV2 prototype — Demo code
+# StructureV2 — prototype
 
-Working prototype for the StructureV2 pitch (see `../prototype-plan.md` and
-the source docs in `../`).
+Working prototype for the StructureV2 pitch. The domain it implements is
+specified in `../problemstatement.md`; `../flowcharts/` is the engineering
+reference and `../user-flows/` the product-facing one.
+`../IMPLEMENTATION-STATUS.md` records what is built versus specified.
 
-Stack: Vite + React + TypeScript + Tailwind (frontend), Cloudflare Pages
-Functions (API), Cloudflare D1 / SQLite (database). Free tier only.
-
-Deployed continuously from `main` to Cloudflare Pages.
+Stack: Vite + React + TypeScript + Tailwind, served by a Cloudflare **Worker**
+with static assets, backed by D1 (SQLite). Free tier throughout.
 
 ## Layout
 
 ```
-Demo/
-  package.json           # single root package (no workspaces)
-  vite.config.ts         # Vite config (proxies /api → :8788 in dev)
-  index.html             # Vite entry
-  src/                   # React app source
-    main.tsx  App.tsx  index.css
-  functions/             # Pages Functions — Cloudflare auto-discovers
-    api/health.ts
-  sql/                   # versioned migrations (paste into D1 console)
-    0001_schema.sql
-    0002_lookups.sql
-  wrangler.jsonc         # tells Cloudflare this is a Pages deployment
-  README.md              # this file
-  dist/                  # vite build output (gitignored)
+src/
+  App.tsx              # micro-router: / /structures/:id /drafts/:id /assignments/:id /inbox /prices
+  worker/index.ts      # the entire API — every /api/* route
+  lib/
+    money.ts           # exact money (integer e4); see §5.5
+    backsolve.ts       # commissioned-margin back-solve + G4pr cap assertion
+  pages/               # one file per route
+  components/          # Dialog, shared chips/badges, NewStructureDialog
+sql/                   # numbered migrations, applied in order
+wrangler.jsonc         # Worker + assets + D1 binding
 ```
 
-## Build & deploy
+## Deploy
 
-Pushed to `main` → Cloudflare builds + deploys automatically. To test locally:
+Push to `main`. Cloudflare Workers Builds builds and deploys automatically —
+there is no GitHub Actions workflow.
+
+**Migrations do not run themselves.** Apply any new `sql/` file to production
+*before* pushing code that reads it, or the deploy breaks on a missing column:
+
+```
+npx wrangler d1 execute structures --remote --file=sql/0009_money_exact.sql
+```
+
+## Local development
 
 ```
 npm install
-npm run build         # writes dist/
+npm run build
+
+# seed a local database (first time only)
+for f in sql/000*.sql; do npx wrangler d1 execute structures --local --file="$f"; done
+
+npx wrangler dev --local     # serves the API and the built assets together
 ```
 
-## Local dev
+`npm run dev` runs Vite alone with no API, which is rarely what you want.
 
-Two terminal tabs:
+## Resetting the local or remote database
 
-```
-# tab 1 — Pages Functions + local D1
-npx wrangler pages dev dist --d1=DB --port=8788
-
-# tab 2 — Vite (proxies /api to :8788)
-npm run dev
-```
-
-Open <http://localhost:5173>.
-
-For local D1 seeding:
+`_reset_wipe.sql` clears all data (keeping schema), then re-run the seeds and
+`_reset_backfill.sql`, which re-applies everything the numbered migrations added
+on top of the seed — CR snapshots, structure descriptions, the component
+catalog, and the exact-money columns:
 
 ```
-npx wrangler d1 execute structures --local --file=sql/0001_schema.sql
-npx wrangler d1 execute structures --local --file=sql/0002_lookups.sql
+sql/_reset_wipe.sql → 0002 → 0003 → 0004 → sql/_reset_backfill.sql
 ```

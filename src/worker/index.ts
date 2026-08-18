@@ -35,7 +35,6 @@ async function handleApi(url: URL, request: Request, env: Env): Promise<Response
 
   if (url.pathname === '/api/health') return handleHealth(env);
   if (url.pathname === '/api/search') return handleSearch(env, url);
-  if (url.pathname === '/api/tags')    return handleTags(env);
   if (url.pathname === '/api/tag-ids') return handleTagIds(env);
   if (url.pathname === '/api/users')  return handleUsers(env);
   if (url.pathname === '/api/components')  return handleComponents(env, url);
@@ -207,25 +206,6 @@ async function handleSearch(env: Env, url: URL): Promise<Response> {
   }
 }
 
-async function handleTags(env: Env): Promise<Response> {
-  try {
-    const q = await env.DB.prepare(`
-      SELECT name, kind FROM TAG
-      WHERE kind IN ('spec', 'general', 'variant', 'sell')
-      ORDER BY kind, name
-    `).all<{ name: string; kind: string }>();
-    const byKind = group(q.results ?? [], (t) => t.kind);
-    return json({
-      spec:    (byKind.get('spec')    ?? []).map((t) => t.name),
-      general: (byKind.get('general') ?? []).map((t) => t.name),
-      variant: (byKind.get('variant') ?? []).map((t) => t.name),
-      sell:    (byKind.get('sell')    ?? []).map((t) => t.name),
-    });
-  } catch (err) {
-    return json({ error: msg(err) }, 500);
-  }
-}
-
 async function handleTagIds(env: Env): Promise<Response> {
   try {
     const q = await env.DB.prepare(`
@@ -273,10 +253,7 @@ async function handleComponents(env: Env, url: URL): Promise<Response> {
         String(r.name).toLowerCase().startsWith(q) ||
         String(r.description ?? '').toLowerCase().includes(q));
     }
-    return json({
-      components: rows.map((r) => r.name),   // back-compat: bare names
-      catalog: rows,                          // full records for auto-fill
-    });
+    return json({ components: rows });
   } catch (err) {
     return json({ error: msg(err) }, 500);
   }
@@ -1566,11 +1543,6 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
       prId = lastPr?.id ?? null;
     }
 
-    // Determine if this structure is a sub-assembly (system tag)
-    const isSubAsm = (liveTagsQ.results ?? []).some((t) => {
-      // Get name_lower for system tags from a lookup we have
-      return false; // we'll re-query
-    });
     const subAsmQ = await env.DB.prepare(`
       SELECT 1 FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
       WHERE st.structure_id = ? AND t.kind = 'system' AND t.name_lower = 'subassembly'
