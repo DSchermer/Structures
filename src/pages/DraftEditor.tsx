@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chip, StatusBadge, tagStyle, usd, pct } from '../components/shared';
 import { Dialog } from '../components/Dialog';
 import { backsolve, type LineForBacksolve } from '../lib/backsolve';
+import { fromE4, toE4 } from '../lib/money';
 import type { User, TagsResp } from '../types';
 
 type DraftLine = {
@@ -216,7 +217,14 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
   const topLevel = draft.spec_number + (draft.part_number || '');
   const siblingTie = findSiblingTagTie(draft);
   const bs = backsolve(
-    draft.lines.map((l) => ({ unit_price: l.unit_price ?? l.price_override ?? 0, quantity: l.quantity, is_commissioned: l.is_commissioned, commission_cap_pct: l.commission_cap_pct } as LineForBacksolve)),
+    draft.lines.map((l) => ({
+      id: l.id,
+      component: l.component_part_number,
+      unit_price_e4: toE4(l.unit_price ?? l.price_override ?? 0),
+      quantity: l.quantity,
+      is_commissioned: l.is_commissioned,
+      commission_cap_pct: l.commission_cap_pct,
+    } as LineForBacksolve)),
     draft.target_assembly_margin_pct ?? 0,
   );
 
@@ -250,8 +258,8 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
 
         {/* Live back-solve readout */}
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">
-          <Stat label="Total cost"     value={<span className="font-mono">{usd(bs.total_cost, true)}</span>} />
-          <Stat label="Baseline sell"  value={<span className="font-mono font-semibold text-ink-900">{usd(bs.baseline_sell_price)}</span>} />
+          <Stat label="Total cost"     value={<span className="font-mono">{usd(fromE4(bs.total_cost_e4), true)}</span>} />
+          <Stat label="Baseline sell"  value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(bs.baseline_sell_price_e4))}</span>} />
           <Stat label="Achieved margin" value={
             <span className={'font-mono ' + (bs.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
               {pct(bs.achieved_margin_pct)}
@@ -330,7 +338,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
               <Section title={`Bill of materials (${draft.lines.length} line${draft.lines.length === 1 ? '' : 's'})`} action={
                 <div className="flex items-baseline gap-3">
                   <span className="text-xs text-ink-500">Rolled-up cost</span>
-                  <span className="font-mono text-sm font-semibold text-ink-900">{usd(bs.total_cost, true)}</span>
+                  <span className="font-mono text-sm font-semibold text-ink-900">{usd(fromE4(bs.total_cost_e4), true)}</span>
                 </div>
               }>
                 <div className="space-y-6">
@@ -1020,7 +1028,7 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
     >
       <div className="space-y-4 text-sm">
         <div className="grid grid-cols-3 gap-4 rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">
-          <Stat label="Baseline sell" value={<span className="font-mono font-semibold text-ink-900">{usd(backsolved.baseline_sell_price)}</span>} />
+          <Stat label="Baseline sell" value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(backsolved.baseline_sell_price_e4))}</span>} />
           <Stat label="Achieved margin" value={
             <span className={'font-mono ' + (backsolved.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
               {pct(backsolved.achieved_margin_pct)}{backsolved.is_below_target && ' (below)'}

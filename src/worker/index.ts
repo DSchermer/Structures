@@ -3,7 +3,8 @@
 // /api/price-points, and the Phase 4 draft endpoints (create / read /
 // update / check-in / discard / check-out).
 
-import { backsolve, type LineForBacksolve } from '../lib/backsolve';
+import { backsolve, findCapBreaches, type LineForBacksolve } from '../lib/backsolve';
+import { fromE4, toE4, roundToCentE4 } from '../lib/money';
 
 interface D1Result<T> { results?: T[]; }
 interface D1PreparedStatement {
@@ -136,10 +137,10 @@ async function handleSearch(env: Env, url: URL): Promise<Response> {
         s.current_construction_revision_number,
         s.current_price_revision_number,
         (SELECT COUNT(*) FROM LINE_ITEM WHERE structure_id = s.id) AS line_item_count,
-        (SELECT pp.price FROM PRICE_POINT pp
+        (SELECT COALESCE(pp.price_e4 / 10000.0, pp.price) FROM PRICE_POINT pp
          WHERE pp.structure_id = s.id AND pp.scope = 'structure_sell'
          ORDER BY pp.set_at DESC LIMIT 1) AS sell_price,
-        (SELECT pp.price FROM PRICE_POINT pp
+        (SELECT COALESCE(pp.price_e4 / 10000.0, pp.price) FROM PRICE_POINT pp
          WHERE pp.structure_id = s.id AND pp.scope = 'subassembly_cost'
          ORDER BY pp.set_at DESC LIMIT 1) AS subassembly_cost,
         u.display_name AS checkout_holder_name,
@@ -287,7 +288,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
     if (component) {
       // BOM-picker mode: filter to one component
       const q = await env.DB.prepare(`
-        SELECT pp.id, pp.price, pp.quote_number, pp.set_at,
+        SELECT pp.id, COALESCE(pp.price_e4 / 10000.0, pp.price) AS price, pp.quote_number, pp.set_at,
                u.display_name AS set_by,
                GROUP_CONCAT(t.name, ',') AS tag_csv
         FROM PRICE_POINT pp
@@ -308,7 +309,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
     }
     // Library mode: every PP with scope + tag info + linked structure
     const ppsQ = await env.DB.prepare(`
-      SELECT pp.id, pp.scope, pp.price, pp.quote_number, pp.set_at,
+      SELECT pp.id, pp.scope, COALESCE(pp.price_e4 / 10000.0, pp.price) AS price, pp.quote_number, pp.set_at,
              pp.component_part_number, pp.target_assembly_margin_pct,
              c.description AS component_description,
              u.display_name AS set_by,
@@ -390,6 +391,8 @@ async function handleCreateComponentCostPp(env: Env, request: Request): Promise<
       }, 422);
     }
 
+    // Quotes arrive as decimal units; convert once, exactly, at the boundary.
+    const priceE4 = toE4(body.price);
     const ppId = uuid();
     const now = isoNow();
     const stmts: D1PreparedStatement[] = [];
@@ -412,11 +415,11 @@ async function handleCreateComponentCostPp(env: Env, request: Request): Promise<
 
     stmts.push(env.DB.prepare(`
       INSERT INTO PRICE_POINT
-        (id, component_part_number, structure_id, scope, price, quote_number,
+        (id, component_part_number, structure_id, scope, price, price_e4, quote_number,
          derived_from_construction_revision_id, derived_from_price_revision_id,
          target_assembly_margin_pct, set_by_user_id, set_at)
-      VALUES (?, ?, NULL, 'component_cost', ?, ?, NULL, NULL, NULL, ?, ?)
-    `).bind(ppId, component, body.price, quote, body.current_user_id, now));
+      VALUES (?, ?, NULL, 'component_cost', ?, ?, ?, NULL, NULL, NULL, ?, ?)
+    `).bind(ppId, component, fromE4(priceE4), priceE4, quote, body.current_user_id, now));
 
     // Tags: get-or-create with kind='cost' (engineers create cost tags freely per §5.2)
     const tagNames = (body.tag_names ?? []).map((n) => n?.trim()).filter((n): n is string => !!n);
@@ -557,7 +560,7 @@ async function loadStructureDetail(env: Env, id: string): Promise<any | null> {
   `).bind(structQ.spec_id).all<{ name: string }>();
 
   const linesQ = await env.DB.prepare(`
-    SELECT li.*, pp.price AS chosen_price, pp.scope AS chosen_price_scope,
+    SELECT li.*, COALESCE(pp.price_e4 / 10000.0, pp.price) AS chosen_price, pp.scope AS chosen_price_scope,
            pp.quote_number AS chosen_quote_number,
            sa.part_number AS sub_assembly_part_number,
            sa_sp.spec_number AS sub_assembly_spec_number,
@@ -587,7 +590,7 @@ async function loadStructureDetail(env: Env, id: string): Promise<any | null> {
   `).bind(id).all<any>();
 
   const ppsQ = await env.DB.prepare(`
-    SELECT pp.id, pp.price, pp.scope, pp.set_at, pp.derived_from_construction_revision_id, pp.derived_from_price_revision_id,
+    SELECT pp.id, COALESCE(pp.price_e4 / 10000.0, pp.price) AS price, pp.scope, pp.set_at, pp.derived_from_construction_revision_id, pp.derived_from_price_revision_id,
            pp.target_assembly_margin_pct,
            u.display_name AS set_by_name
     FROM PRICE_POINT pp
@@ -932,12 +935,12 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
         stmts.push(env.DB.prepare(`
           INSERT INTO DRAFT_LINE_ITEM
             (id, structure_id, sort_order, component_part_number, part_description, quantity,
-             chosen_price_point_id, price_override, supplier, lead_time_days, product_code,
+             chosen_price_point_id, price_override, price_override_e4, supplier, lead_time_days, product_code,
              is_commissioned, commission_cap_pct, sub_assembly_structure_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           uuid(), newId, li.sort_order, li.component_part_number, li.part_description, li.quantity,
-          li.chosen_price_point_id, li.price_override, li.supplier, li.lead_time_days, li.product_code,
+          li.chosen_price_point_id, li.price_override, li.price_override_e4, li.supplier, li.lead_time_days, li.product_code,
           li.is_commissioned, li.commission_cap_pct, li.sub_assembly_structure_id
         ));
       }
@@ -1012,11 +1015,11 @@ async function handleCheckout(env: Env, structureId: string, request: Request): 
       stmts.push(env.DB.prepare(`
         INSERT INTO DRAFT_LINE_ITEM
           (id, structure_id, sort_order, component_part_number, part_description, quantity,
-           chosen_price_point_id, price_override, supplier, lead_time_days, product_code,
+           chosen_price_point_id, price_override, price_override_e4, supplier, lead_time_days, product_code,
            is_commissioned, commission_cap_pct, sub_assembly_structure_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(li.id, structureId, li.sort_order, li.component_part_number, li.part_description, li.quantity,
-              li.chosen_price_point_id, li.price_override, li.supplier, li.lead_time_days, li.product_code,
+              li.chosen_price_point_id, li.price_override, li.price_override_e4, li.supplier, li.lead_time_days, li.product_code,
               li.is_commissioned, li.commission_cap_pct, li.sub_assembly_structure_id));
     }
 
@@ -1056,7 +1059,7 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
       ORDER BY t.name
     `).bind(draft.spec_id).all<{ name: string }>();
     const lines = await env.DB.prepare(`
-      SELECT dli.*, pp.price AS chosen_price, sa.part_number AS sub_assembly_part_number
+      SELECT dli.*, COALESCE(pp.price_e4 / 10000.0, pp.price) AS chosen_price, sa.part_number AS sub_assembly_part_number
       FROM DRAFT_LINE_ITEM dli
       LEFT JOIN PRICE_POINT pp ON pp.id = dli.chosen_price_point_id
       LEFT JOIN STRUCTURE sa ON sa.id = dli.sub_assembly_structure_id
@@ -1203,12 +1206,14 @@ async function handlePatchDraft(env: Env, structureId: string, request: Request)
       stmts.push(env.DB.prepare(`
         INSERT INTO DRAFT_LINE_ITEM
           (id, structure_id, sort_order, component_part_number, part_description, quantity,
-           chosen_price_point_id, price_override, supplier, lead_time_days, product_code,
+           chosen_price_point_id, price_override, price_override_e4, supplier, lead_time_days, product_code,
            is_commissioned, commission_cap_pct, sub_assembly_structure_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         li.id ?? uuid(), structureId, li.sort_order, li.component_part_number, li.part_description, li.quantity,
-        li.chosen_price_point_id, li.price_override, li.supplier, li.lead_time_days, li.product_code,
+        li.chosen_price_point_id, li.price_override,
+        li.price_override == null ? null : toE4(li.price_override),
+        li.supplier, li.lead_time_days, li.product_code,
         li.is_commissioned ? 1 : 0, li.commission_cap_pct, li.sub_assembly_structure_id
       ));
     }
@@ -1405,30 +1410,44 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     }
 
     // Run back-solve
-    const linesForBack: LineForBacksolve[] = (draftLines.results ?? []).map((li: any) => {
-      const cost = (li.chosen_price_point_id || li.price_override !== null) ? Number(li.price_override ?? 0) : 0;
-      // We need to resolve chosen PP price
-      return {
-        id: li.id,
-        component: li.component_part_number,
-        unit_price: 0, // will fix below
-        quantity: li.quantity ?? 0,
-        is_commissioned: !!li.is_commissioned,
-        commission_cap_pct: li.commission_cap_pct,
-      };
-    });
+    const linesForBack: LineForBacksolve[] = (draftLines.results ?? []).map((li: any) => ({
+      id: li.id,
+      component: li.component_part_number,
+      unit_price_e4: 0, // resolved below
+      quantity: li.quantity ?? 0,
+      is_commissioned: !!li.is_commissioned,
+      commission_cap_pct: li.commission_cap_pct,
+    }));
 
-    // Resolve unit prices: for chosen_price_point_id, look up PP.price; else use price_override
+    // Resolve each line's unit cost in exact e4 — from the pinned PRICE_POINT,
+    // or from the engineer's override.
     for (let i = 0; i < (draftLines.results ?? []).length; i++) {
       const li = (draftLines.results ?? [])[i];
       if (li.chosen_price_point_id) {
-        const pp = await env.DB.prepare(`SELECT price FROM PRICE_POINT WHERE id = ?`).bind(li.chosen_price_point_id).first<{ price: number }>();
-        linesForBack[i].unit_price = pp?.price ?? 0;
+        const pp = await env.DB.prepare(`SELECT price, price_e4 FROM PRICE_POINT WHERE id = ?`)
+          .bind(li.chosen_price_point_id).first<{ price: number; price_e4: number | null }>();
+        linesForBack[i].unit_price_e4 = pp?.price_e4 ?? toE4(pp?.price ?? 0);
       } else {
-        linesForBack[i].unit_price = Number(li.price_override ?? 0);
+        linesForBack[i].unit_price_e4 = li.price_override_e4 ?? toE4(li.price_override ?? 0);
       }
     }
     const bs = backsolve(linesForBack, draft.target_assembly_margin_pct);
+
+    // G4pr cap-breach assertion (§5.5). The back-solve sets each commissioned
+    // line's revenue to cost/(1-cap), so its margin equals the cap in exact
+    // arithmetic; this re-checks after rounding, which is the step that could
+    // push a line past its contractual ceiling.
+    if (prChanged) {
+      const breaches = findCapBreaches(bs, linesForBack);
+      if (breaches.length > 0) {
+        const b = breaches[0];
+        return json({
+          error: `G4pr: line ${b.component ?? b.id} breaches its commission cap — `
+               + `achieved ${(b.achieved * 100).toFixed(4)}% against a cap of ${(b.cap * 100).toFixed(2)}%`,
+          breaches,
+        }, 422);
+      }
+    }
 
     // ===== COMMIT =====
     const nextCr = crChanged ? (live.current_construction_revision_number ?? 0) + 1 : (live.current_construction_revision_number ?? 0);
@@ -1458,11 +1477,11 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
       stmts.push(env.DB.prepare(`
         INSERT INTO LINE_ITEM
           (id, structure_id, sort_order, component_part_number, part_description, quantity,
-           chosen_price_point_id, price_override, supplier, lead_time_days, product_code,
+           chosen_price_point_id, price_override, price_override_e4, supplier, lead_time_days, product_code,
            is_commissioned, commission_cap_pct, sub_assembly_structure_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(li.id, structureId, li.sort_order, li.component_part_number, li.part_description, li.quantity,
-              li.chosen_price_point_id, li.price_override, li.supplier, li.lead_time_days, li.product_code,
+              li.chosen_price_point_id, li.price_override, li.price_override_e4, li.supplier, li.lead_time_days, li.product_code,
               li.is_commissioned, li.commission_cap_pct, li.sub_assembly_structure_id));
     }
 
@@ -1511,7 +1530,7 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
           component_part_number: li.component_part_number,
           part_description: li.part_description,
           quantity: li.quantity,
-          unit_price: linesForBack[i].unit_price,
+          unit_price: fromE4(linesForBack[i].unit_price_e4),
           chosen_price_point_id: li.chosen_price_point_id,
           price_override: li.price_override,
           supplier: li.supplier,
@@ -1562,20 +1581,22 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     // target_assembly_margin_pct that was in force at this commit so the
     // PP is self-describing.
     const newPpId = uuid();
+    // A sub-assembly publishes its rolled-up cost, also rounded to the cent.
+    const subAsmCostE4 = roundToCentE4(bs.total_cost_e4);
     if (subAsm) {
       stmts.push(env.DB.prepare(`
-        INSERT INTO PRICE_POINT (id, component_part_number, structure_id, scope, price, quote_number,
+        INSERT INTO PRICE_POINT (id, component_part_number, structure_id, scope, price, price_e4, quote_number,
                                  derived_from_construction_revision_id, derived_from_price_revision_id,
                                  target_assembly_margin_pct, set_by_user_id, set_at)
-        VALUES (?, NULL, ?, 'subassembly_cost', ?, NULL, ?, ?, ?, ?, ?)
-      `).bind(newPpId, structureId, bs.total_cost, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
+        VALUES (?, NULL, ?, 'subassembly_cost', ?, ?, NULL, ?, ?, ?, ?, ?)
+      `).bind(newPpId, structureId, fromE4(subAsmCostE4), subAsmCostE4, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
     } else {
       stmts.push(env.DB.prepare(`
-        INSERT INTO PRICE_POINT (id, component_part_number, structure_id, scope, price, quote_number,
+        INSERT INTO PRICE_POINT (id, component_part_number, structure_id, scope, price, price_e4, quote_number,
                                  derived_from_construction_revision_id, derived_from_price_revision_id,
                                  target_assembly_margin_pct, set_by_user_id, set_at)
-        VALUES (?, NULL, ?, 'structure_sell', ?, NULL, ?, ?, ?, ?, ?)
-      `).bind(newPpId, structureId, bs.baseline_sell_price, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
+        VALUES (?, NULL, ?, 'structure_sell', ?, ?, NULL, ?, ?, ?, ?, ?)
+      `).bind(newPpId, structureId, fromE4(bs.baseline_sell_price_e4), bs.baseline_sell_price_e4, crId, prId, draft.target_assembly_margin_pct, body.current_user_id, now));
     }
 
     // Tag the new PP — engineer-supplied tags are authoritative.
@@ -1633,7 +1654,7 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
       structure_id: structureId,
       cr_committed: crChanged ? nextCr : null,
       pr_committed: prChanged ? nextPr : null,
-      baseline_price: subAsm ? bs.total_cost : bs.baseline_sell_price,
+      baseline_price: fromE4(subAsm ? subAsmCostE4 : bs.baseline_sell_price_e4),
       achieved_margin_pct: bs.achieved_margin_pct,
       is_below_target: bs.is_below_target,
       assignment_id: assignmentId,

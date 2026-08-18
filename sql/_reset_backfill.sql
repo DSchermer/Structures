@@ -179,3 +179,12 @@ WHERE pp.scope = 'component_cost'
   AND pp.component_part_number IS NOT NULL
   AND pp.component_part_number NOT IN (SELECT component_part_number FROM COMPONENT);
 
+
+
+----------------------------------------------------------------------
+-- Exact money (from 0009). Seed INSERTs write only the REAL columns, so the
+-- authoritative e4 values are derived here.
+----------------------------------------------------------------------
+UPDATE PRICE_POINT     SET price_e4          = CAST(ROUND(price * 10000) AS INTEGER)          WHERE price IS NOT NULL;
+UPDATE LINE_ITEM       SET price_override_e4 = CAST(ROUND(price_override * 10000) AS INTEGER) WHERE price_override IS NOT NULL;
+UPDATE DRAFT_LINE_ITEM SET price_override_e4 = CAST(ROUND(price_override * 10000) AS INTEGER) WHERE price_override IS NOT NULL;
