@@ -35,6 +35,7 @@ type AssignmentResp = {
   structure: {
     id: string;
     top_level_part_number: string;
+    description?: string | null;
     spec_number: string;
     part_number: string;
     spec_customer_revision: string;
@@ -94,6 +95,7 @@ export default function AssignmentView({ id, currentUser }: { id: string; curren
         <div className="flex items-baseline gap-3 flex-wrap">
           <h1 className="text-2xl font-semibold text-ink-900">
             Rev <span className="font-mono">{cr.revision_number}</span> of <span className="font-mono">{structure.top_level_part_number}</span>
+            {detail?.description && <span className="block mt-1 text-sm font-normal text-ink-600">{detail.description}</span>}
           </h1>
           {assignment.acknowledged && <StatusBadge tone="emerald">ENTERED INTO ERP</StatusBadge>}
           {structure.is_archived     && <StatusBadge tone="rose">ARCHIVED</StatusBadge>}

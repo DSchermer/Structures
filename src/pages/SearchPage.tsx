@@ -106,6 +106,9 @@ function matchesPrefix(r: Row, qLower: string): boolean {
   if (r.part_number.toLowerCase().startsWith(qLower)) return true;
   if (r.top_level_part_number.toLowerCase().startsWith(qLower)) return true;
   if (r.parent_part_number && r.parent_part_number.toLowerCase().startsWith(qLower)) return true;
+  // Descriptions are prose, so match anywhere in the string rather than only at
+  // the start — "butterfly" should find "6in 300# lugged butterfly valve".
+  if (r.description && r.description.toLowerCase().includes(qLower)) return true;
   for (const t of r.spec_tags)    if (t.toLowerCase().startsWith(qLower)) return true;
   for (const t of r.general_tags) if (t.toLowerCase().startsWith(qLower)) return true;
   for (const t of r.variant_tags) if (t.toLowerCase().startsWith(qLower)) return true;
@@ -235,6 +238,9 @@ function ResultRow({ row }: { row: Row }) {
           {row.is_uncommitted_draft ? 'never checked in' : `Rev ${row.current_construction_revision_number}`}
         </span>
       </div>
+      {row.description && (
+        <div className={'mt-0.5 text-sm text-ink-600 ' + (archived ? 'line-through' : '')}>{row.description}</div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {row.is_uncommitted_draft && <StatusBadge tone="amber">YOUR DRAFT — resume editing</StatusBadge>}
         {row.variant_tags.map((t) => <Chip key={`v-${t}`} kind="variant" name={t} />)}

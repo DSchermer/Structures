@@ -108,6 +108,7 @@ interface SearchRow {
   spec_id: string;
   spec_number: string;
   part_number: string;
+  description: string | null;
   top_level_part_number: string;
   parent_structure_id: string | null;
   parent_part_number: string | null;
@@ -128,7 +129,7 @@ async function handleSearch(env: Env, url: URL): Promise<Response> {
     const userId = url.searchParams.get('user_id') ?? '';
     const structuresQ = await env.DB.prepare(`
       SELECT
-        s.id, s.spec_id, sp.spec_number, s.part_number,
+        s.id, s.spec_id, sp.spec_number, s.part_number, s.description,
         (sp.spec_number || s.part_number) AS top_level_part_number,
         s.parent_structure_id,
         ps.part_number AS parent_part_number,
@@ -176,6 +177,7 @@ async function handleSearch(env: Env, url: URL): Promise<Response> {
         spec_id: s.spec_id,
         spec_number: s.spec_number,
         part_number: s.part_number,
+        description: s.description,
         top_level_part_number: s.top_level_part_number,
         is_variant: s.parent_structure_id !== null,
         parent_part_number: s.parent_part_number,
@@ -450,6 +452,7 @@ function overlaySnapshot(data: any, crId: string, revisionNumber: number, snapsh
   return {
     ...data,
     part_number: sf.part_number ?? data.part_number,
+    description: sf.description ?? data.description,
     top_level_part_number: (data.spec_number ?? '') + (sf.part_number ?? data.part_number),
     build_hours: sf.build_hours ?? data.build_hours,
     target_assembly_margin_pct: sf.target_assembly_margin_pct ?? data.target_assembly_margin_pct,
@@ -583,6 +586,7 @@ async function loadStructureDetail(env: Env, id: string): Promise<any | null> {
     spec_current_customer_revision: structQ.spec_current_customer_revision,
     pinned_customer_revision: structQ.pinned_customer_revision,
     part_number: structQ.part_number,
+    description: structQ.description,
     top_level_part_number: structQ.top_level_part_number,
     is_variant: structQ.parent_structure_id !== null,
     parent: structQ.parent_id ? { id: structQ.parent_id, part_number: structQ.parent_part_number } : null,
@@ -658,6 +662,7 @@ interface CreateStructureBody {
   spec_id: string;             // which spec this lives under
   parent_structure_id?: string; // non-null = variant
   part_number: string;         // engineer-entered (e.g. 'P002' or 'P001-ARC')
+  description?: string | null; // short one-line title; cloned from source for variants
   base_from_structure_id?: string; // clone BOM + general tags from this structure
   // Preferred variant entry point: the structure the engineer picked as the
   // source. May be a base part OR another variant (sibling-spawn) — the server
@@ -687,6 +692,7 @@ interface CreateSpecBody {
   spec_number: string;
   customer_revision: string;
   part_number: string;
+  description?: string | null;
   current_user_id: string;
 }
 
@@ -732,17 +738,17 @@ async function handleCreateSpec(env: Env, request: Request): Promise<Response> {
               JSON.stringify({ spec_created: true, customer_revision: { old: null, new: custRev } })),
       env.DB.prepare(`
         INSERT INTO STRUCTURE
-          (id, part_number, spec_id, spec_revision_id, parent_structure_id,
+          (id, part_number, description, spec_id, spec_revision_id, parent_structure_id,
            current_construction_revision_number, current_price_revision_number,
            created_by_user_id, created_at)
-        VALUES (?, ?, ?, ?, NULL, 0, 0, ?, ?)
-      `).bind(structId, partNumber, specId, srId, body.current_user_id, now),
+        VALUES (?, ?, ?, ?, ?, NULL, 0, 0, ?, ?)
+      `).bind(structId, partNumber, (body.description ?? '').trim() || null, specId, srId, body.current_user_id, now),
       env.DB.prepare(`
         INSERT INTO DRAFT_STRUCTURE
-          (structure_id, editor_user_id, part_number, spec_id, spec_revision_id,
+          (structure_id, editor_user_id, part_number, description, spec_id, spec_revision_id,
            parent_structure_id, draft_started_at, last_edited_at)
-        VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
-      `).bind(structId, body.current_user_id, partNumber, specId, srId, now, now),
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+      `).bind(structId, body.current_user_id, partNumber, (body.description ?? '').trim() || null, specId, srId, now, now),
       env.DB.prepare(`INSERT INTO CHECKOUT_LOCK (structure_id, holder_user_id, acquired_at) VALUES (?, ?, ?)`)
         .bind(structId, body.current_user_id, now),
     ]);
@@ -831,15 +837,15 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
 
     stmts.push(env.DB.prepare(`
       INSERT INTO STRUCTURE
-        (id, part_number, spec_id, spec_revision_id, parent_structure_id,
+        (id, part_number, description, spec_id, spec_revision_id, parent_structure_id,
          current_construction_revision_number, current_price_revision_number,
          build_hours, target_assembly_margin_pct,
          build_instr_1, build_instr_2, build_instr_3, build_instr_4, build_instr_5,
          work_instr_1, work_instr_2, work_instr_3, work_instr_4, work_instr_5,
          created_by_user_id, created_at)
-      VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      newId, partNumber, body.spec_id, sr.id, parentId,
+      newId, partNumber, (body.description ?? '').trim() || source?.description || null, body.spec_id, sr.id, parentId,
       source?.build_hours ?? null,
       source?.target_assembly_margin_pct ?? null,
       source?.build_instr_1 ?? null, source?.build_instr_2 ?? null, source?.build_instr_3 ?? null, source?.build_instr_4 ?? null, source?.build_instr_5 ?? null,
@@ -850,14 +856,14 @@ async function handleCreateStructure(env: Env, request: Request): Promise<Respon
     // DRAFT_STRUCTURE mirror
     stmts.push(env.DB.prepare(`
       INSERT INTO DRAFT_STRUCTURE
-        (structure_id, editor_user_id, part_number, spec_id, spec_revision_id, parent_structure_id,
+        (structure_id, editor_user_id, part_number, description, spec_id, spec_revision_id, parent_structure_id,
          build_hours, target_assembly_margin_pct,
          build_instr_1, build_instr_2, build_instr_3, build_instr_4, build_instr_5,
          work_instr_1, work_instr_2, work_instr_3, work_instr_4, work_instr_5,
          draft_started_at, last_edited_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      newId, body.current_user_id, partNumber, body.spec_id, sr.id, parentId,
+      newId, body.current_user_id, partNumber, (body.description ?? '').trim() || source?.description || null, body.spec_id, sr.id, parentId,
       source?.build_hours ?? null, source?.target_assembly_margin_pct ?? null,
       source?.build_instr_1 ?? null, source?.build_instr_2 ?? null, source?.build_instr_3 ?? null, source?.build_instr_4 ?? null, source?.build_instr_5 ?? null,
       source?.work_instr_1 ?? null, source?.work_instr_2 ?? null, source?.work_instr_3 ?? null, source?.work_instr_4 ?? null, source?.work_instr_5 ?? null,
@@ -934,14 +940,14 @@ async function handleCheckout(env: Env, structureId: string, request: Request): 
     stmts.push(env.DB.prepare(`INSERT INTO CHECKOUT_LOCK (structure_id, holder_user_id, acquired_at) VALUES (?, ?, ?)`).bind(structureId, body.current_user_id, now));
     stmts.push(env.DB.prepare(`
       INSERT INTO DRAFT_STRUCTURE
-        (structure_id, editor_user_id, part_number, spec_id, spec_revision_id, parent_structure_id,
+        (structure_id, editor_user_id, part_number, description, spec_id, spec_revision_id, parent_structure_id,
          build_hours, target_assembly_margin_pct,
          build_instr_1, build_instr_2, build_instr_3, build_instr_4, build_instr_5,
          work_instr_1, work_instr_2, work_instr_3, work_instr_4, work_instr_5,
          draft_started_at, last_edited_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      structureId, body.current_user_id, struct.part_number, struct.spec_id, struct.spec_revision_id, struct.parent_structure_id,
+      structureId, body.current_user_id, struct.part_number, struct.description, struct.spec_id, struct.spec_revision_id, struct.parent_structure_id,
       struct.build_hours, struct.target_assembly_margin_pct,
       struct.build_instr_1, struct.build_instr_2, struct.build_instr_3, struct.build_instr_4, struct.build_instr_5,
       struct.work_instr_1, struct.work_instr_2, struct.work_instr_3, struct.work_instr_4, struct.work_instr_5,
@@ -1044,6 +1050,7 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
       spec_number: spec?.spec_number ?? '',
       spec_revision_id: draft.spec_revision_id,
       part_number: draft.part_number,
+      description: draft.description,
       parent_structure_id: draft.parent_structure_id,
       parent_part_number: struct?.parent_part_number ?? null,
       build_hours: draft.build_hours,
@@ -1083,6 +1090,7 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
 interface DraftPatch {
   current_user_id: string;
   part_number: string;
+  description: string | null;
   build_hours: number;
   target_assembly_margin_pct: number;
   build_instr_1?: string | null;
@@ -1125,13 +1133,13 @@ async function handlePatchDraft(env: Env, structureId: string, request: Request)
 
     stmts.push(env.DB.prepare(`
       UPDATE DRAFT_STRUCTURE SET
-        part_number = ?, build_hours = ?, target_assembly_margin_pct = ?,
+        part_number = ?, description = ?, build_hours = ?, target_assembly_margin_pct = ?,
         build_instr_1 = ?, build_instr_2 = ?, build_instr_3 = ?, build_instr_4 = ?, build_instr_5 = ?,
         work_instr_1 = ?, work_instr_2 = ?, work_instr_3 = ?, work_instr_4 = ?, work_instr_5 = ?,
         last_edited_at = ?
       WHERE structure_id = ?
     `).bind(
-      body.part_number, body.build_hours, body.target_assembly_margin_pct,
+      body.part_number, (body.description ?? '').trim() || null, body.build_hours, body.target_assembly_margin_pct,
       body.build_instr_1 ?? null, body.build_instr_2 ?? null, body.build_instr_3 ?? null, body.build_instr_4 ?? null, body.build_instr_5 ?? null,
       body.work_instr_1 ?? null,  body.work_instr_2 ?? null,  body.work_instr_3 ?? null,  body.work_instr_4 ?? null,  body.work_instr_5 ?? null,
       now, structureId
@@ -1225,6 +1233,9 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     // G2 always-required
     const partNumber = (draft.part_number ?? '').trim();
     if (!partNumber || partNumber.length > 25) return json({ error: 'G2: part_number must be 1-25 chars' }, 422);
+    const description = (draft.description ?? '').trim();
+    if (!description)          return json({ error: 'G2: description is required' }, 422);
+    if (description.length > 120) return json({ error: 'G2: description must be 120 characters or fewer' }, 422);
     if (!draft.build_hours || draft.build_hours <= 0) return json({ error: 'G2: build_hours must be > 0' }, 422);
     if (draft.target_assembly_margin_pct === null || draft.target_assembly_margin_pct === undefined) return json({ error: 'G2: target_assembly_margin_pct required' }, 422);
     if (draft.target_assembly_margin_pct < 0 || draft.target_assembly_margin_pct >= 1) return json({ error: 'G2: target_assembly_margin_pct must be in [0, 1)' }, 422);
@@ -1375,14 +1386,14 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
     // Promote DRAFT_STRUCTURE → STRUCTURE
     stmts.push(env.DB.prepare(`
       UPDATE STRUCTURE SET
-        part_number = ?, build_hours = ?, target_assembly_margin_pct = ?,
+        part_number = ?, description = ?, build_hours = ?, target_assembly_margin_pct = ?,
         build_instr_1 = ?, build_instr_2 = ?, build_instr_3 = ?, build_instr_4 = ?, build_instr_5 = ?,
         work_instr_1 = ?, work_instr_2 = ?, work_instr_3 = ?, work_instr_4 = ?, work_instr_5 = ?,
         current_construction_revision_number = ?, current_price_revision_number = ?,
         spec_revision_id = ?, parent_structure_id = ?
       WHERE id = ?
     `).bind(
-      draft.part_number, draft.build_hours, draft.target_assembly_margin_pct,
+      draft.part_number, description, draft.build_hours, draft.target_assembly_margin_pct,
       draft.build_instr_1, draft.build_instr_2, draft.build_instr_3, draft.build_instr_4, draft.build_instr_5,
       draft.work_instr_1, draft.work_instr_2, draft.work_instr_3, draft.work_instr_4, draft.work_instr_5,
       nextCr, nextPr, draft.spec_revision_id, draft.parent_structure_id, structureId
@@ -1426,6 +1437,7 @@ async function handleCheckin(env: Env, structureId: string, request: Request): P
       const snapshot = {
         structure_fields: {
           part_number:                draft.part_number,
+          description:                draft.description,
           build_hours:                draft.build_hours,
           target_assembly_margin_pct: draft.target_assembly_margin_pct,
           spec_revision_id:           draft.spec_revision_id,
@@ -1753,6 +1765,7 @@ function isCrChanged(live: any, draft: any, liveLines: any[], draftLines: any[],
   // CR-side: BOM shape + per-line construction fields + structure construction fields + general/variant tags + instructions + spec_revision_id
   if (live.current_construction_revision_number === 0) return true; // never committed
   if (live.part_number !== draft.part_number) return true;
+  if ((live.description ?? null) !== (draft.description ?? null)) return true;
   if (Number(live.build_hours) !== Number(draft.build_hours)) return true;
   if (live.spec_revision_id !== draft.spec_revision_id) return true;
   for (const f of ['build_instr_1', 'build_instr_2', 'build_instr_3', 'build_instr_4', 'build_instr_5',
@@ -1824,7 +1837,7 @@ function buildCrChangeSet(live: any, draft: any, liveLines: any[], draftLines: a
   // Structure-level field diffs
   const structureFields: Array<{ field: string; old: unknown; new: unknown }> = [];
   const SF_NUMERIC = ['build_hours'];
-  const SF_TEXT = ['part_number', 'spec_revision_id', 'build_instr_1', 'build_instr_2', 'build_instr_3', 'build_instr_4', 'build_instr_5', 'work_instr_1', 'work_instr_2', 'work_instr_3', 'work_instr_4', 'work_instr_5'];
+  const SF_TEXT = ['part_number', 'description', 'spec_revision_id', 'build_instr_1', 'build_instr_2', 'build_instr_3', 'build_instr_4', 'build_instr_5', 'work_instr_1', 'work_instr_2', 'work_instr_3', 'work_instr_4', 'work_instr_5'];
   for (const f of SF_TEXT) {
     if ((live as any)[f] !== (draft as any)[f]) {
       structureFields.push({ field: f, old: (live as any)[f], new: (draft as any)[f] });

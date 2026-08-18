@@ -5,6 +5,7 @@ export type Row = {
   spec_id: string;
   spec_number: string;
   part_number: string;
+  description: string | null;
   top_level_part_number: string;
   is_variant: boolean;
   parent_part_number: string | null;
@@ -105,6 +106,7 @@ export type StructureDetail = {
   spec_current_customer_revision: string;
   pinned_customer_revision: string;
   part_number: string;
+  description: string | null;
   top_level_part_number: string;
   is_variant: boolean;
   parent: { id: string; part_number: string } | null;

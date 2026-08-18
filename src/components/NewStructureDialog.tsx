@@ -32,6 +32,7 @@ export function NewStructureDialog({ rows, currentUser, onClose }: {
   const [customerRev, setCustomerRev] = useState('');
 
   // Shared / existing-spec fields
+  const [description, setDescription] = useState('');
   const [spec, setSpec] = useState<Spec | null>(null);
   const [specQuery, setSpecQuery] = useState('');
   const [source, setSource] = useState<Row | null>(null);
@@ -82,12 +83,14 @@ export function NewStructureDialog({ rows, currentUser, onClose }: {
     spec_number: specNumber.trim(),
     customer_revision: customerRev.trim(),
     part_number: partNumber.trim(),
+    description: description.trim() || null,
     current_user_id: currentUser.id,
   });
 
   const createPart = () => post('/api/structures', {
     spec_id: spec!.id,
     part_number: partNumber.trim(),
+    description: description.trim() || null,
     current_user_id: currentUser.id,
   });
 
@@ -185,6 +188,11 @@ export function NewStructureDialog({ rows, currentUser, onClose }: {
               <input className={inputCls} value={partNumber}
                 onChange={(e) => setPartNumber(e.target.value)} placeholder="e.g. P001" />
             </Field>
+            <Field label="Description" hint="A one-line title. Required before check-in; you can also fill it in the editor.">
+              <input className={inputCls.replace('font-mono ', '')} value={description}
+                onChange={(e) => setDescription(e.target.value)} maxLength={120}
+                placeholder='e.g. 6in 300# RF trunnion ball valve, PEEK seat' />
+            </Field>
             <PreviewLine value={preview} />
           </>
         )}
@@ -233,6 +241,11 @@ export function NewStructureDialog({ rows, currentUser, onClose }: {
             <Field label="Part number" hint="Unique within this spec, 1–25 characters.">
               <input autoFocus className={inputCls} value={partNumber}
                 onChange={(e) => setPartNumber(e.target.value)} placeholder="e.g. P006" />
+            </Field>
+            <Field label="Description" hint="A one-line title. Required before check-in; you can also fill it in the editor.">
+              <input className={inputCls.replace('font-mono ', '')} value={description}
+                onChange={(e) => setDescription(e.target.value)} maxLength={120}
+                placeholder='e.g. 6in 300# RF trunnion ball valve, PEEK seat' />
             </Field>
             <PreviewLine value={preview} />
           </>

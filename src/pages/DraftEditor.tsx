@@ -31,6 +31,7 @@ type Draft = {
   spec_number: string;
   spec_revision_id: string;
   part_number: string;
+  description: string | null;
   parent_structure_id: string | null;
   parent_part_number: string | null;
   build_hours: number | null;
@@ -167,6 +168,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
         body: JSON.stringify({
           current_user_id: currentUser.id,
           part_number: draft.part_number,
+          description: draft.description,
           build_hours: draft.build_hours ?? 0,
           target_assembly_margin_pct: draft.target_assembly_margin_pct ?? 0,
           build_instr_1: draft.build_instr_1, build_instr_2: draft.build_instr_2, build_instr_3: draft.build_instr_3, build_instr_4: draft.build_instr_4, build_instr_5: draft.build_instr_5,
@@ -265,6 +267,27 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
       <div className="mt-6 space-y-6">
           {/* Header fields */}
           <Section title="Structure fields">
+            <div className="text-sm mb-3">
+              <Field
+                label="Description"
+                hint={
+                  (draft.description ?? '').trim()
+                    ? `${(draft.description ?? '').trim().length}/120 characters`
+                    : 'Required at check-in (G2) — a one-line title, e.g. "6in 300# RF trunnion ball valve, PEEK seat"'
+                }
+              >
+                <input
+                  className={
+                    'w-full text-sm px-2 py-1.5 rounded border focus:outline-none focus:ring-2 focus:ring-indigo-500 ' +
+                    ((draft.description ?? '').trim() ? 'border-ink-200' : 'border-rose-300 bg-rose-50/40')
+                  }
+                  value={draft.description ?? ''}
+                  onChange={(e) => update('description', e.target.value)}
+                  maxLength={120}
+                  placeholder="Short one-line title for this assembly"
+                />
+              </Field>
+            </div>
             <div className="flex flex-wrap gap-x-8 gap-y-3 text-sm items-end">
               <Field label="Part number" hint={`Live preview: ${topLevel || '—'}`}>
                 <input

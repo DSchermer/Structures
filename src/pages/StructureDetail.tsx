@@ -191,6 +191,11 @@ function DetailHeader({ d, currentUser, checkingOut, onCheckOut, onNewVariant }:
           ) : null;
         })()}
       </div>
+      {d.description && (
+        <p className={'mt-1 text-sm text-ink-700 ' + (d.is_archived ? 'line-through opacity-70' : '')}>
+          {d.description}
+        </p>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         {d.spec_tags.map((t) => <Chip key={`s-${t}`} kind="spec" name={t} />)}
