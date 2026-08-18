@@ -32,6 +32,9 @@ DELETE FROM STRUCTURE;
 DELETE FROM SPEC_REVISION;
 DELETE FROM SPEC;
 
+-- COMPONENT is standalone (nothing FKs to it); re-seeded from LINE_ITEM by _reset_backfill
+DELETE FROM COMPONENT;
+
 -- TAG comes after all *_TAG join tables (which we cleared above)
 DELETE FROM TAG;
 

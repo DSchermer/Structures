@@ -61,11 +61,18 @@ function findSiblingTagTie(draft: Draft): string | null {
   return null;
 }
 
+type CatalogRow = {
+  name: string; description: string | null;
+  default_supplier: string | null; default_product_code: string | null;
+  default_lead_time_days: number | null; price_point_count: number;
+};
+
 type PpRow = { id: string; price: number; quote_number: string | null; set_at: string; set_by: string; tags: string[]; is_superseded: boolean };
 
 export default function DraftEditor({ id, currentUser, tags }: { id: string; currentUser: User | null; tags: TagsResp | null }) {
   const [draft, setDraft] = useState<Draft | 'loading' | 'error' | 'notfound'>('loading');
   const [components, setComponents] = useState<string[]>([]);
+  const [catalog, setCatalog] = useState<CatalogRow[]>([]);
   const [ppCache, setPpCache] = useState<Map<string, PpRow[]>>(new Map());
   const [saving, setSaving] = useState(false);
   const [showCheckin, setShowCheckin] = useState(false);
@@ -80,7 +87,9 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
         setDraft(await r.json() as Draft);
       } catch { setDraft('error'); }
     })();
-    fetch('/api/components').then((r) => r.json()).then((d: { components: string[] }) => setComponents(d.components)).catch(() => {});
+    fetch('/api/components').then((r) => r.json()).then((d: { components: string[]; catalog?: CatalogRow[] }) => {
+      setComponents(d.components); setCatalog(d.catalog ?? []);
+    }).catch(() => {});
     fetch('/api/users').then((r) => r.json()).then((d: { users: User[] }) => setUsers(d.users)).catch(() => {});
   }, [id]);
 
@@ -329,7 +338,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
                     label="Standard line items"
                     lines={standard}
                     isCommissionedTable={false}
-                    components={components}
+                    components={components} catalog={catalog}
                     loadPps={loadPps}
                     onUpdate={updateLine}
                     onRemove={removeLine}
@@ -341,7 +350,7 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
                     sublabel="Each commissioned line earns at most its cap; the back-solve loads the remaining margin onto the standard lines."
                     lines={commissioned}
                     isCommissionedTable
-                    components={components}
+                    components={components} catalog={catalog}
                     loadPps={loadPps}
                     onUpdate={updateLine}
                     onRemove={removeLine}
@@ -498,12 +507,13 @@ function Section({ title, children, action, hint }: { title: string; children: R
 
 // ---------- BOM sub-tables ----------
 
-function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, loadPps, onUpdate, onRemove, onToggleCommissioned, onAdd }: {
+function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, catalog, loadPps, onUpdate, onRemove, onToggleCommissioned, onAdd }: {
   label: string;
   sublabel?: string;
   lines: DraftLine[];
   isCommissionedTable: boolean;
   components: string[];
+  catalog: CatalogRow[];
   loadPps: (c: string) => Promise<PpRow[]>;
   onUpdate: (id: string, patch: Partial<DraftLine>) => void;
   onRemove: (id: string) => void;
@@ -545,7 +555,7 @@ function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, 
                 key={line.id}
                 line={line}
                 isCommissionedTable={isCommissionedTable}
-                components={components}
+                components={components} catalog={catalog}
                 loadPps={loadPps}
                 onChange={(patch) => onUpdate(line.id, patch)}
                 onRemove={() => onRemove(line.id)}
@@ -559,10 +569,11 @@ function BomSubTable({ label, sublabel, lines, isCommissionedTable, components, 
   );
 }
 
-function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange, onRemove, onToggleCommissioned }: {
+function BomTableRow({ line, isCommissionedTable, components, catalog, loadPps, onChange, onRemove, onToggleCommissioned }: {
   line: DraftLine;
   isCommissionedTable: boolean;
   components: string[];
+  catalog: CatalogRow[];
   loadPps: (c: string) => Promise<PpRow[]>;
   onChange: (patch: Partial<DraftLine>) => void;
   onRemove: () => void;
@@ -615,9 +626,27 @@ function BomTableRow({ line, isCommissionedTable, components, loadPps, onChange,
                 key={m}
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => { onChange({ component_part_number: m, chosen_price_point_id: null, unit_price: null }); setFocused(false); }}
-                className="block w-full text-left px-2 py-1 font-mono text-xs hover:bg-indigo-50"
-              >{m}</button>
+                onClick={() => {
+                  const c = catalog.find((x: CatalogRow) => x.name === m);
+                  onChange({
+                    component_part_number: m,
+                    chosen_price_point_id: null,
+                    unit_price: null,
+                    // Pre-fill from the component catalog. Only fills blanks —
+                    // a line that already says something keeps saying it.
+                    ...(c?.description && !line.part_description ? { part_description: c.description } : {}),
+                    ...(c?.default_supplier && !line.supplier ? { supplier: c.default_supplier } : {}),
+                    ...(c?.default_product_code && !line.product_code ? { product_code: c.default_product_code } : {}),
+                    ...(c?.default_lead_time_days != null && !line.lead_time_days ? { lead_time_days: c.default_lead_time_days } : {}),
+                  });
+                  setFocused(false);
+                }}
+                className="block w-full text-left px-2 py-1 hover:bg-indigo-50"
+              >
+                <span className="font-mono text-xs text-ink-900">{m}</span>
+                {(() => { const c = catalog.find((x: CatalogRow) => x.name === m);
+                  return c?.description ? <span className="block text-[11px] text-ink-500 truncate">{c.description}</span> : null; })()}
+              </button>
             ))}
           </div>
         )}

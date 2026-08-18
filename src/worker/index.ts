@@ -255,15 +255,27 @@ async function handleUsers(env: Env): Promise<Response> {
 async function handleComponents(env: Env, url: URL): Promise<Response> {
   try {
     const q = url.searchParams.get('q')?.toLowerCase() ?? '';
+    // COMPONENT is the canonical catalog; the price library only tells us what
+    // has been quoted, which is a subset.
     const result = await env.DB.prepare(`
-      SELECT DISTINCT component_part_number AS name
-      FROM PRICE_POINT
-      WHERE scope = 'component_cost'
-      ORDER BY component_part_number
-    `).all<{ name: string }>();
-    let names = (result.results ?? []).map((r) => r.name);
-    if (q) names = names.filter((n) => n.toLowerCase().startsWith(q));
-    return json({ components: names });
+      SELECT c.component_part_number AS name, c.description,
+             c.default_supplier, c.default_product_code, c.default_lead_time_days,
+             (SELECT COUNT(*) FROM PRICE_POINT pp
+               WHERE pp.scope = 'component_cost'
+                 AND pp.component_part_number = c.component_part_number) AS price_point_count
+      FROM COMPONENT c
+      ORDER BY c.component_part_number
+    `).all<any>();
+    let rows = result.results ?? [];
+    if (q) {
+      rows = rows.filter((r) =>
+        String(r.name).toLowerCase().startsWith(q) ||
+        String(r.description ?? '').toLowerCase().includes(q));
+    }
+    return json({
+      components: rows.map((r) => r.name),   // back-compat: bare names
+      catalog: rows,                          // full records for auto-fill
+    });
   } catch (err) {
     return json({ error: msg(err) }, 500);
   }
@@ -291,12 +303,14 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
         tags: (p.tag_csv ? String(p.tag_csv).split(',').filter(Boolean) : []),
         is_superseded: (p.tag_csv ?? '').toLowerCase().includes('superseded'),
       }));
-      return json({ price_points: points });
+      const comp = await env.DB.prepare(`SELECT description, default_supplier, default_product_code, default_lead_time_days FROM COMPONENT WHERE component_part_number = ?`).bind(component).first<any>();
+      return json({ price_points: points, component: comp ?? null });
     }
     // Library mode: every PP with scope + tag info + linked structure
     const ppsQ = await env.DB.prepare(`
       SELECT pp.id, pp.scope, pp.price, pp.quote_number, pp.set_at,
              pp.component_part_number, pp.target_assembly_margin_pct,
+             c.description AS component_description,
              u.display_name AS set_by,
              s.id AS structure_id,
              (sp.spec_number || s.part_number) AS structure_top_level_part_number
@@ -304,6 +318,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
       LEFT JOIN USER u ON u.id = pp.set_by_user_id
       LEFT JOIN STRUCTURE s ON s.id = pp.structure_id
       LEFT JOIN SPEC sp ON sp.id = s.spec_id
+      LEFT JOIN COMPONENT c ON c.component_part_number = pp.component_part_number
       ORDER BY pp.set_at DESC, pp.id DESC
     `).all<any>();
     const tagsQ = await env.DB.prepare(`
@@ -322,6 +337,7 @@ async function handlePricePoints(env: Env, url: URL): Promise<Response> {
         set_at: p.set_at,
         set_by: p.set_by,
         component_part_number: p.component_part_number,
+        component_description: p.component_description,
         structure: p.structure_id ? { id: p.structure_id, top_level_part_number: p.structure_top_level_part_number } : null,
         tags: tags.filter((t) => t.kind !== 'system').map((t) => ({ name: t.name, kind: t.kind })),
         is_superseded: sys.includes('superseded'),
@@ -340,6 +356,12 @@ interface CreateComponentCostBody {
   price: number;
   quote_number: string;
   tag_names?: string[];
+  // Canonical component fields. Required when the component is new to the
+  // catalog; optional (and updates the record) when it already exists.
+  description?: string | null;
+  default_supplier?: string | null;
+  default_product_code?: string | null;
+  default_lead_time_days?: number | null;
 }
 
 async function handleCreateComponentCostPp(env: Env, request: Request): Promise<Response> {
@@ -353,9 +375,40 @@ async function handleCreateComponentCostPp(env: Env, request: Request): Promise<
     if (typeof body.price !== 'number' || !Number.isFinite(body.price) || body.price < 0) return json({ error: 'price must be a non-negative number' }, 400);
     if (!quote)                 return json({ error: 'quote_number required for component_cost PRICE_POINTs' }, 400);
 
+    // A quote must resolve to a known component. If this part is new to the
+    // catalog we need a description up front — otherwise the price library
+    // gains a row nobody can identify, which is the problem COMPONENT exists
+    // to prevent.
+    const existingComp = await env.DB.prepare(
+      `SELECT component_part_number, description FROM COMPONENT WHERE component_part_number = ?`
+    ).bind(component).first<{ component_part_number: string; description: string }>();
+    const suppliedDesc = (body.description ?? '').trim();
+    if (!existingComp && !suppliedDesc) {
+      return json({
+        error: `${component} is not in the component catalog yet. Provide a description so the price library can identify it.`,
+        needs_component: true,
+      }, 422);
+    }
+
     const ppId = uuid();
     const now = isoNow();
     const stmts: D1PreparedStatement[] = [];
+
+    if (!existingComp) {
+      stmts.push(env.DB.prepare(`
+        INSERT INTO COMPONENT
+          (component_part_number, description, default_supplier, default_product_code,
+           default_lead_time_days, created_by_user_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(component, suppliedDesc, (body.default_supplier ?? '').trim() || null,
+              (body.default_product_code ?? '').trim() || null,
+              body.default_lead_time_days ?? null, body.current_user_id, now));
+    } else if (suppliedDesc && suppliedDesc !== existingComp.description) {
+      // Engineer corrected the description while recording a quote.
+      stmts.push(env.DB.prepare(
+        `UPDATE COMPONENT SET description = ?, updated_at = ? WHERE component_part_number = ?`
+      ).bind(suppliedDesc, now, component));
+    }
 
     stmts.push(env.DB.prepare(`
       INSERT INTO PRICE_POINT

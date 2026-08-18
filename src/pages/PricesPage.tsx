@@ -13,6 +13,7 @@ type Pp = {
   set_at: string;
   set_by: string | null;
   component_part_number: string | null;
+  component_description: string | null;
   structure: { id: string; top_level_part_number: string } | null;
   tags: PpTag[];
   is_superseded: boolean;
@@ -63,6 +64,7 @@ export default function PricesPage({ currentUser }: { currentUser: User | null }
       if (qLower) {
         const hay: string[] = [];
         if (p.component_part_number) hay.push(p.component_part_number.toLowerCase());
+        if (p.component_description) hay.push(p.component_description.toLowerCase());
         if (p.structure) hay.push(p.structure.top_level_part_number.toLowerCase());
         for (const t of p.tags) hay.push(t.name.toLowerCase());
         const matched = hay.some((s) => s.startsWith(qLower));
@@ -108,6 +110,15 @@ export default function PricesPage({ currentUser }: { currentUser: User | null }
     () => Array.from(new Set(ppsList.filter((p) => p.component_part_number).map((p) => p.component_part_number!))).sort(),
     [ppsList]
   );
+  const componentDescriptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of ppsList) {
+      if (p.component_part_number && p.component_description && !m.has(p.component_part_number)) {
+        m.set(p.component_part_number, p.component_description);
+      }
+    }
+    return m;
+  }, [ppsList]);
   const existingCostTags = useMemo(
     () => Array.from(new Set(ppsList.flatMap((p) => p.tags.filter((t) => t.kind === 'cost').map((t) => t.name)))).sort(),
     [ppsList]
@@ -152,6 +163,7 @@ export default function PricesPage({ currentUser }: { currentUser: User | null }
         <CreateCostPpDialog
           currentUser={currentUser}
           existingComponents={existingComponents}
+          componentDescriptions={componentDescriptions}
           existingCostTags={existingCostTags}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); reloadPps(); }}
@@ -302,7 +314,14 @@ function PpRow({ p, onToggleSuperseded, canEdit }: { p: Pp; onToggleSuperseded: 
         <ScopeBadge scope={p.scope} />
       </td>
       <td className="px-3 py-2">
-        {p.component_part_number && <div className="font-mono text-ink-900">{p.component_part_number}</div>}
+        {p.component_part_number && (
+          <>
+            <div className="font-mono text-ink-900">{p.component_part_number}</div>
+            {p.component_description && (
+              <div className="text-xs text-ink-500">{p.component_description}</div>
+            )}
+          </>
+        )}
         {p.structure && (
           <span className="font-mono text-indigo-700">
             {p.structure.top_level_part_number}
@@ -337,9 +356,10 @@ function PpRow({ p, onToggleSuperseded, canEdit }: { p: Pp; onToggleSuperseded: 
   );
 }
 
-function CreateCostPpDialog({ currentUser, existingComponents, existingCostTags, onClose, onCreated }: {
+function CreateCostPpDialog({ currentUser, existingComponents, componentDescriptions, existingCostTags, onClose, onCreated }: {
   currentUser: User;
   existingComponents: string[];
+  componentDescriptions: Map<string, string>;
   existingCostTags: string[];
   onClose: () => void;
   onCreated: () => void;
@@ -349,6 +369,7 @@ function CreateCostPpDialog({ currentUser, existingComponents, existingCostTags,
   const [price, setPrice] = useState<string>('');
   const [quote, setQuote] = useState('');
   const [tags, setTags] = useState<string[]>([]);
+  const [description, setDescription] = useState('');
   const [newTagInput, setNewTagInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -394,6 +415,7 @@ function CreateCostPpDialog({ currentUser, existingComponents, existingCostTags,
           price: priceNum,
           quote_number: trimmedQuote,
           tag_names: tags,
+          description: description.trim() || null,
         }),
       });
       const j = await r.json() as any;
@@ -435,6 +457,19 @@ function CreateCostPpDialog({ currentUser, existingComponents, existingCostTags,
           <div className="text-[10px] text-ink-400 mt-1">
             Match an existing component, or type a brand-new one.
           </div>
+          <div className="mt-3">
+            <div className="text-xs uppercase tracking-wide text-ink-500 mb-1">Description</div>
+            <input
+              className="w-full text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              placeholder="What is this part? e.g. Chrome-plated A105 trunnion ball"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={200}
+            />
+            <div className="text-[10px] text-ink-400 mt-1">
+              Required for a component the catalog hasn't seen before. Leave blank to keep an existing component's description; fill it to correct one.
+            </div>
+          </div>
           {componentFocused && componentMatches.length > 0 && (
             <div className="absolute z-20 left-0 right-0 mt-0.5 bg-white border border-ink-200 rounded-md shadow-md max-h-48 overflow-y-auto">
               {componentMatches.map((m) => (
@@ -442,7 +477,12 @@ function CreateCostPpDialog({ currentUser, existingComponents, existingCostTags,
                   key={m}
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => { setComponent(m); setComponentFocused(false); }}
+                  onClick={() => {
+                    setComponent(m);
+                    const known = componentDescriptions.get(m);
+                    if (known) setDescription(known);
+                    setComponentFocused(false);
+                  }}
                   className="block w-full text-left px-2 py-1 font-mono text-xs hover:bg-indigo-50"
                 >{m}</button>
               ))}
