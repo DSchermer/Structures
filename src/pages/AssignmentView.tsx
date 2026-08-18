@@ -41,6 +41,8 @@ type AssignmentResp = {
     spec_customer_revision: string;
     is_archived: boolean;
     is_below_target: boolean;
+    has_newer_revision?: boolean;
+    current_construction_revision_number?: number | null;
   };
   detail: StructureDetail;
 };
@@ -97,10 +99,19 @@ export default function AssignmentView({ id, currentUser }: { id: string; curren
             Rev <span className="font-mono">{cr.revision_number}</span> of <span className="font-mono">{structure.top_level_part_number}</span>
             {detail?.description && <span className="block mt-1 text-sm font-normal text-ink-600">{detail.description}</span>}
           </h1>
+          <StatusBadge tone="slate">AS COMMITTED AT REV {cr.revision_number}</StatusBadge>
           {assignment.acknowledged && <StatusBadge tone="emerald">ENTERED INTO ERP</StatusBadge>}
           {structure.is_archived     && <StatusBadge tone="rose">ARCHIVED</StatusBadge>}
           {structure.is_below_target && <StatusBadge tone="amber">BELOW TARGET</StatusBadge>}
         </div>
+        {structure.has_newer_revision && (
+          <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            This structure has since advanced to Rev {structure.current_construction_revision_number}. You are
+            seeing it as committed at Rev {cr.revision_number} — the revision assigned to you. Enter this
+            revision, then process any later ones in order.{' '}
+            <a href={`/structures/${structure.id}`} className="underline">View the current structure</a>.
+          </p>
+        )}
         <div className="mt-2 text-sm text-ink-600">
           Assigned by <strong className="text-ink-800">{assignment.assigned_by_name}</strong> to <strong className="text-ink-800">{assignment.recipient_name}</strong> on {formatDate(assignment.assigned_at)}
         </div>

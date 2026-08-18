@@ -1050,6 +1050,13 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
 
     const editor = await env.DB.prepare(`SELECT display_name FROM USER WHERE id = ?`).bind(draft.editor_user_id).first<{ display_name: string }>();
 
+    // Sub-assemblies publish a rolled-up cost, not a sell price, and have no
+    // margin of their own (§5.5) — the editor needs to know which it is.
+    const subAsmQ = await env.DB.prepare(`
+      SELECT 1 FROM STRUCTURE_TAG st JOIN TAG t ON t.id = st.tag_id
+      WHERE st.structure_id = ? AND t.kind = 'system' AND t.name_lower = 'subassembly'
+    `).bind(structureId).first();
+
     // Active siblings' variant-tag sets, for the sibling-spawn banner (§5.4).
     // Returned as raw sets rather than a precomputed verdict so the editor can
     // re-evaluate the tie live as the engineer adds or removes tags — the
@@ -1113,6 +1120,7 @@ async function handleGetDraft(env: Env, structureId: string): Promise<Response> 
       tags: draftTags.results ?? [],
       spec_tags: (specTagsQ.results ?? []).map((t) => t.name),
       sibling_variant_tag_sets: siblingVariantTagSets,
+      is_subassembly: !!subAsmQ,
     });
   } catch (err) {
     return json({ error: msg(err) }, 500);
@@ -1714,7 +1722,23 @@ async function handleAssignment(env: Env, id: string): Promise<Response> {
     if (!a) return json({ error: 'Not found' }, 404);
 
     // Live structure detail for "the entire current structure as of that CR"
-    const detail = await loadStructureDetail(env, a.structure_id);
+    // Render the structure AS OF the assigned CR, not as it is now. If the
+    // structure has been revised since, live state would pair this revision's
+    // diff with a later body — OM would enter values that were never in the
+    // revision they were handed. Same overlay the ?at_cr= viewer uses.
+    const live = await loadStructureDetail(env, a.structure_id);
+    let detail = live;
+    let stale = false;
+    if (live) {
+      const snap = await env.DB.prepare(
+        `SELECT snapshot_json, taken_at FROM CONSTRUCTION_REVISION_SNAPSHOT WHERE construction_revision_id = ?`
+      ).bind(a.construction_revision_id).first<{ snapshot_json: string; taken_at: string }>();
+      if (snap) {
+        detail = overlaySnapshot(live, a.construction_revision_id, a.revision_number,
+                                 JSON.parse(snap.snapshot_json), snap.taken_at);
+      }
+      stale = live.current_construction_revision_number > a.revision_number;
+    }
 
     return json({
       assignment: {
@@ -1742,6 +1766,9 @@ async function handleAssignment(env: Env, id: string): Promise<Response> {
         spec_customer_revision: a.spec_customer_revision,
         is_archived: !!a.is_archived,
         is_below_target: !!a.is_below_target,
+        // True when the structure has moved on past the revision assigned here.
+        has_newer_revision: stale,
+        current_construction_revision_number: live?.current_construction_revision_number ?? null,
       },
       detail,
     });

@@ -49,6 +49,7 @@ type Draft = {
   // detect the sibling-spawn tie live as the engineer edits tags (§5.4); G5c
   // is the authoritative gate at check-in.
   sibling_variant_tag_sets: Array<{ name: string; tag_ids: string[] }>;
+  is_subassembly: boolean;
 };
 
 // A tie is exact set equality on variant tags against any active sibling —
@@ -257,16 +258,27 @@ export default function DraftEditor({ id, currentUser, tags }: { id: string; cur
         )}
 
         {/* Live back-solve readout */}
-        <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">
-          <Stat label="Total cost"     value={<span className="font-mono">{usd(fromE4(bs.total_cost_e4), true)}</span>} />
-          <Stat label="Baseline sell"  value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(bs.baseline_sell_price_e4))}</span>} />
-          <Stat label="Achieved margin" value={
-            <span className={'font-mono ' + (bs.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
-              {pct(bs.achieved_margin_pct)}
-              {bs.is_below_target && ' (below target)'}
-            </span>
-          } />
-          <Stat label="Target margin"  value={<span className="font-mono">{pct(draft.target_assembly_margin_pct ?? 0)}</span>} />
+        <div className={'mt-4 grid gap-4 text-sm rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3 '
+          + (draft.is_subassembly ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4')}>
+          <Stat label="Total cost" value={<span className="font-mono">{usd(fromE4(bs.total_cost_e4), true)}</span>} />
+          {draft.is_subassembly ? (
+            <Stat
+              label="Rolled-up cost"
+              value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(bs.total_cost_e4))}</span>}
+              hint="Sub-assemblies publish a cost, never a sell price, and carry no margin of their own."
+            />
+          ) : (
+            <>
+              <Stat label="Baseline sell" value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(bs.baseline_sell_price_e4))}</span>} />
+              <Stat label="Achieved margin" value={
+                <span className={'font-mono ' + (bs.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
+                  {pct(bs.achieved_margin_pct)}
+                  {bs.is_below_target && ' (below target)'}
+                </span>
+              } />
+              <Stat label="Target margin" value={<span className="font-mono">{pct(draft.target_assembly_margin_pct ?? 0)}</span>} />
+            </>
+          )}
         </div>
 
         <div className="mt-5 flex items-center gap-2 flex-wrap">
@@ -416,11 +428,12 @@ function Frame({ children }: { children: React.ReactNode }) {
   return <div className="mx-auto max-w-7xl px-6 py-6">{children}</div>;
 }
 
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
   return (
     <div>
       <div className="text-[10px] uppercase tracking-wide text-ink-400">{label}</div>
       <div className="mt-0.5 text-sm">{value}</div>
+      {hint && <div className="mt-0.5 text-[10px] text-ink-400">{hint}</div>}
     </div>
   );
 }
@@ -976,7 +989,7 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
   onClose: () => void;
 }) {
   const [notes, setNotes] = useState('');
-  const [sellTagName, setSellTagName] = useState('sell-2026');
+  const [sellTagName, setSellTagName] = useState(draft.is_subassembly ? 'cost-2026' : 'sell-2026');
   const [recipient, setRecipient] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -1026,20 +1039,34 @@ function CheckinDialog({ draft, backsolved, users, currentUser, onClose }: {
       }
     >
       <div className="space-y-4 text-sm">
-        <div className="grid grid-cols-3 gap-4 rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3">
-          <Stat label="Baseline sell" value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(backsolved.baseline_sell_price_e4))}</span>} />
-          <Stat label="Achieved margin" value={
-            <span className={'font-mono ' + (backsolved.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
-              {pct(backsolved.achieved_margin_pct)}{backsolved.is_below_target && ' (below)'}
-            </span>
-          } />
+        <div className={'grid gap-4 rounded-md bg-indigo-50/60 border border-indigo-100 px-4 py-3 '
+          + (draft.is_subassembly ? 'grid-cols-2' : 'grid-cols-3')}>
+          {draft.is_subassembly ? (
+            <Stat
+              label="Rolled-up cost"
+              value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(backsolved.total_cost_e4))}</span>}
+              hint="Published as a cost price point. Sub-assemblies are never sold standalone."
+            />
+          ) : (
+            <>
+              <Stat label="Baseline sell" value={<span className="font-mono font-semibold text-ink-900">{usd(fromE4(backsolved.baseline_sell_price_e4))}</span>} />
+              <Stat label="Achieved margin" value={
+                <span className={'font-mono ' + (backsolved.is_below_target ? 'text-rose-700' : 'text-emerald-700')}>
+                  {pct(backsolved.achieved_margin_pct)}{backsolved.is_below_target && ' (below)'}
+                </span>
+              } />
+            </>
+          )}
           <Stat label="Lines" value={<span className="font-mono">{draft.lines.length}</span>} />
         </div>
 
         <Field label="Revision note (optional, surfaced to OM)">
           <textarea className="w-full text-sm px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder='e.g. "New variant for North Slope project — arctic body + low-temp packing."' />
         </Field>
-        <Field label="Sell-price tag" hint="Defaults to the current sell year.">
+        <Field
+          label={draft.is_subassembly ? 'Cost-price tag' : 'Sell-price tag'}
+          hint={draft.is_subassembly ? 'Applied to the published sub-assembly cost.' : 'Defaults to the current sell year.'}
+        >
           <input className="w-40 text-sm font-mono px-2 py-1.5 rounded border border-ink-200 focus:outline-none focus:ring-2 focus:ring-indigo-500" value={sellTagName} onChange={(e) => setSellTagName(e.target.value)} />
         </Field>
         <Field label="Send to OM (optional)" hint="If the build changed and you pick a recipient, they get an inbox item. Pure pricing updates never go to OM regardless.">
