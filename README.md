@@ -13,7 +13,18 @@ with static assets, backed by D1 (SQLite). Free tier throughout.
 ```
 src/
   App.tsx              # micro-router: / /structures/:id /drafts/:id /assignments/:id /inbox /prices
-  worker/index.ts      # the entire API — every /api/* route
+  worker/
+    index.ts           # entry point + /api/* route table
+    env.ts             # D1 / Worker binding types
+    util.ts            # json responses, ids, timestamps
+    rows.ts            # query row shapes used by more than one module
+    structure-detail.ts# the structure read model + point-in-time snapshot overlay
+    revisions.ts       # which stream changed (CR vs PR) + the committed change sets
+    routes/            # one module per resource
+      health.ts  search.ts  tags.ts  users.ts  components.ts
+      price-points.ts  specs.ts  structures.ts  drafts.ts
+      checkin.ts       # the §5.7 validation cascade and atomic commit
+      assignments.ts   # the OM handoff
   lib/
     money.ts           # exact money (integer e4); see §5.5
     backsolve.ts       # commissioned-margin back-solve + G4pr cap assertion
